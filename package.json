@@ -2,6 +2,9 @@
   "name": "somecode",
   "private": true,
   "type": "module",
+  "bin": {
+    "somecode": "bin/somecode.ts"
+  },
   "workspaces": [
     "packages/*",
     "apps/*"
@@ -10,6 +13,7 @@
     "node": ">=26"
   },
   "scripts": {
+    "start": "node bin/somecode.ts",
     "test": "vitest run",
     "typecheck": "tsc -b"
   },
