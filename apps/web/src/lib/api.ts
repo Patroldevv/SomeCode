@@ -1,0 +1,53 @@
+import type { ErrorCode } from '@somecode/protocol';
+
+export type AgentInfo = { id: string; label: string; installed: boolean; version?: string };
+export type ProjectInfo = { id: string; name: string; path: string };
+export type SessionInfo = { id: string; projectId: string; agentId: string };
+
+/** A failed request, reduced to a code the UI can map to a message. */
+export class ApiError extends Error {
+  readonly code: ErrorCode | 'network';
+  constructor(code: ErrorCode | 'network') {
+    super(code);
+    this.name = 'ApiError';
+    this.code = code;
+  }
+}
+
+export function createApi(token: string) {
+  async function call<T>(path: string, init?: { method: string; body: unknown }): Promise<T> {
+    let res: Response;
+    try {
+      res = await fetch(path, {
+        method: init?.method ?? 'GET',
+        headers: {
+          authorization: `Bearer ${token}`,
+          ...(init ? { 'content-type': 'application/json' } : {}),
+        },
+        ...(init ? { body: JSON.stringify(init.body) } : {}),
+      });
+    } catch {
+      throw new ApiError('network');
+    }
+    if (!res.ok) {
+      let code: ErrorCode = 'internal';
+      try {
+        const body = (await res.json()) as { error?: { code?: ErrorCode } };
+        if (body.error?.code) code = body.error.code;
+      } catch {
+        // Non-JSON error body: keep the generic code.
+      }
+      throw new ApiError(code);
+    }
+    return (await res.json()) as T;
+  }
+
+  return {
+    agents: () => call<AgentInfo[]>('/api/agents'),
+    projects: () => call<ProjectInfo[]>('/api/projects'),
+    addProject: (name: string, path: string) =>
+      call<ProjectInfo>('/api/projects', { method: 'POST', body: { name, path } }),
+    createSession: (projectId: string, agentId: string) =>
+      call<SessionInfo>('/api/sessions', { method: 'POST', body: { projectId, agentId } }),
+  };
+}
