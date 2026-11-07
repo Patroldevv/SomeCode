@@ -10,7 +10,10 @@
   "dependencies": {
     "@somecode/protocol": "*",
     "react": "^19.3.1",
-    "react-dom": "^19.3.1"
+    "react-dom": "^19.3.1",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "shiki": "^4.6.0"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.5",
