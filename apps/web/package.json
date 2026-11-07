@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@somecode/protocol": "*",
+    "diff": "^9.0.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "react-markdown": "^10.1.0",
