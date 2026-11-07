@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { createApi, ApiError, type AgentInfo } from './lib/api.ts';
 import { createConnection, type Connection, type ConnectionState } from './lib/connection.ts';
+import { planAnswer } from './lib/permissionAnswers.ts';
 import { loadToken } from './lib/token.ts';
 import { addLocalUserMessage, applyEvent, initialState, type Item, type SessionState } from './lib/sessionState.ts';
 import { errorText, t, type MessageKey } from './i18n/index.ts';
@@ -42,6 +43,10 @@ function Client({ token }: { token: string }) {
   const [message, setMessage] = useState('');
   const [starting, setStarting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  // Permission requests already answered from this page; the ref guards against a double click
+  // before React re-renders, the state disables the card's buttons.
+  const answeredRef = useRef<ReadonlySet<string>>(new Set());
+  const [answered, setAnswered] = useState<ReadonlySet<string>>(answeredRef.current);
 
   const fail = (err: unknown): void =>
     setErrorMessage(errorText(err instanceof ApiError ? err.code : 'internal'));
@@ -117,11 +122,16 @@ function Client({ token }: { token: string }) {
     }
   };
 
-  const respond = (requestId: string, optionId: string | null): void => {
+  const respond = (requestId: string, optionId: string): void => {
     if (!sessionId) return;
-    if (!conn.current?.send({ type: 'permission_response', sessionId, requestId, optionId })) {
+    const plan = planAnswer(answeredRef.current, sessionId, requestId, optionId);
+    if (!plan) return;
+    if (!conn.current?.send(plan.message)) {
       setErrorMessage(errorText('network'));
+      return;
     }
+    answeredRef.current = plan.answered;
+    setAnswered(plan.answered);
   };
 
   const running = session.status === 'running';
@@ -179,7 +189,11 @@ function Client({ token }: { token: string }) {
           <ul className="flex flex-col gap-2">
             {session.items.map((item, index) => (
               <li key={index}>
-                <ItemView item={item} onRespond={respond} />
+                <ItemView
+                  item={item}
+                  answered={item.kind === 'permission' && answered.has(item.requestId)}
+                  onRespond={respond}
+                />
               </li>
             ))}
           </ul>
@@ -217,7 +231,9 @@ function Labeled({ label, children }: { label: MessageKey; children: React.React
   );
 }
 
-function ItemView({ item, onRespond }: { item: Item; onRespond: (requestId: string, optionId: string | null) => void }) {
+type ItemViewProps = { item: Item; answered: boolean; onRespond: (requestId: string, optionId: string) => void };
+
+function ItemView({ item, answered, onRespond }: ItemViewProps) {
   switch (item.kind) {
     case 'user':
       return <Labeled label="item.user">{item.text}</Labeled>;
@@ -251,14 +267,18 @@ function ItemView({ item, onRespond }: { item: Item; onRespond: (requestId: stri
             <p className="text-sm text-neutral-500">{t('permission.resolved')}</p>
           ) : (
             <div className="mt-2 flex flex-wrap gap-2">
+              {/* Only the agent's own options: no extra button that would cancel the whole turn. */}
               {item.options.map((o) => (
-                <button key={o.id} type="button" className={button} onClick={() => onRespond(item.requestId, o.id)}>
+                <button
+                  key={o.id}
+                  type="button"
+                  className={button}
+                  disabled={answered}
+                  onClick={() => onRespond(item.requestId, o.id)}
+                >
                   {o.name}
                 </button>
               ))}
-              <button type="button" className={secondaryButton} onClick={() => onRespond(item.requestId, null)}>
-                {t('permission.reject')}
-              </button>
             </div>
           )}
         </div>

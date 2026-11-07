@@ -27,7 +27,6 @@ export const en = {
   'item.unsupported': 'Unsupported update',
   'item.error': 'The agent could not finish this message',
   'permission.heading': 'Permission requested',
-  'permission.reject': 'Reject',
   'permission.resolved': 'Answered',
   'error.dismiss': 'Dismiss',
   'error.bad_request': 'The request was not valid, so check the values you entered and try again.',

@@ -29,7 +29,6 @@ export const tr: Record<MessageKey, string> = {
   'item.unsupported': 'Desteklenmeyen güncelleme',
   'item.error': 'Ajan bu mesajı tamamlayamadı',
   'permission.heading': 'İzin isteniyor',
-  'permission.reject': 'Reddet',
   'permission.resolved': 'Yanıtlandı',
   'error.dismiss': 'Kapat',
   'error.bad_request': 'İstek geçerli değildi, bu yüzden girdiğiniz değerleri kontrol edip yeniden deneyin.',
