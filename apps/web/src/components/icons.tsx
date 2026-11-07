@@ -174,3 +174,11 @@ export function Spinner({ label, className = 'size-4' }: { label: string; classN
     </span>
   );
 }
+
+/** A panel with a left column (sidebar toggle). */
+export const SidebarIcon = (p: IconProps) => (
+  <Icon {...p}>
+    <rect x="2" y="2.75" width="12" height="10.5" rx="1.5" />
+    <path d="M6 2.75v10.5" />
+  </Icon>
+);

@@ -1,311 +1,134 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { createApi, ApiError, type AgentInfo } from './lib/api.ts';
-import { clearActiveSession, loadActiveSession, saveActiveSession } from './lib/activeSession.ts';
-import { createConnection, type Connection, type ConnectionState } from './lib/connection.ts';
-import { planAnswer } from './lib/permissionAnswers.ts';
+import { useCallback, useState } from 'react';
+import { ChatHeader, ChatView, ErrorBanner } from './components/ChatView.tsx';
+import { EmptyState } from './components/EmptyState.tsx';
+import { SidebarIcon } from './components/icons.tsx';
+import { NewSessionDialog, type NewSessionInput } from './components/NewSessionDialog.tsx';
+import { Sidebar } from './components/Sidebar.tsx';
+import { useCatalog } from './hooks/useCatalog.ts';
+import { useConnection, type UseConnectionOptions } from './hooks/useConnection.ts';
+import { useSidebarOpen } from './hooks/useSidebarOpen.ts';
+import { errorText, t } from './i18n/index.ts';
+import { loadActiveSession, saveActiveSession } from './lib/activeSession.ts';
+import { createApi, type Api } from './lib/api.ts';
+import { createSessionsStore } from './lib/sessionsStore.ts';
 import { loadToken } from './lib/token.ts';
-import { addLocalUserMessage, applyEvent, initialState, type Item, type SessionState } from './lib/sessionState.ts';
-import { errorText, t, type MessageKey } from './i18n/index.ts';
-
-const input =
-  'rounded border border-neutral-300 bg-white px-2 py-1 text-neutral-900 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100';
-const button =
-  'rounded bg-blue-600 px-3 py-1 text-white disabled:opacity-50 dark:bg-blue-500';
-const secondaryButton =
-  'rounded border border-neutral-400 px-3 py-1 disabled:opacity-50 dark:border-neutral-600';
 
 export function App() {
   const [token] = useState(loadToken);
-  if (token === null) return <Shell><p>{t('token.missing')}</p></Shell>;
+  if (token === null) {
+    return (
+      <main className="flex h-dvh items-center justify-center bg-bg px-4 font-ui text-text">
+        <p className="max-w-md text-center">{t('token.missing')}</p>
+      </main>
+    );
+  }
   return <Client token={token} />;
 }
 
-function Shell({ children }: { children: React.ReactNode }) {
-  return (
-    <main className="mx-auto flex min-h-screen max-w-3xl flex-col gap-4 bg-white p-4 text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100">
-      <h1 className="text-xl font-semibold">{t('app.title')}</h1>
-      {children}
-    </main>
-  );
-}
+/** The server normalises project paths; compare without trailing slashes so `/a/b/` finds `/a/b`. */
+const samePath = (a: string, b: string): boolean => (a.replace(/\/+$/, '') || '/') === (b.replace(/\/+$/, '') || '/');
 
-function Client({ token }: { token: string }) {
-  const [api] = useState(() => createApi(token));
-  const conn = useRef<Connection | null>(null);
+export type ClientProps = {
+  token: string;
+  /** Test seams: a fake REST client and a fake WebSocket. */
+  api?: Api;
+  createSocket?: UseConnectionOptions['createSocket'];
+};
+
+export function Client({ token, api: injectedApi, createSocket }: ClientProps) {
+  const [api] = useState(() => injectedApi ?? createApi(token));
+  const [store] = useState(createSessionsStore);
   // The session this tab showed before a reload (F5) is restored and replayed from seq 0.
-  const [restored] = useState(loadActiveSession);
-  const activeId = useRef<string | null>(restored);
-  /** Set until the server confirms the restored session exists (`subscribed`) or denies it. */
-  const restoring = useRef<string | null>(restored);
+  const [restoredId] = useState(loadActiveSession);
+  const [activeId, setActiveId] = useState<string | null>(restoredId);
+  const [banner, setBanner] = useState<string | null>(null);
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [sidebarOpen, toggleSidebar] = useSidebarOpen();
 
-  const [connState, setConnState] = useState<ConnectionState>('connecting');
-  const [agents, setAgents] = useState<AgentInfo[]>([]);
-  const [agentId, setAgentId] = useState('');
-  const [projectName, setProjectName] = useState('');
-  const [projectPath, setProjectPath] = useState('');
-  const [sessionId, setSessionId] = useState<string | null>(restored);
-  const [session, setSession] = useState<SessionState>(initialState);
-  const [message, setMessage] = useState('');
-  const [starting, setStarting] = useState(false);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  // Permission requests already answered from this page; the ref guards against a double click
-  // before React re-renders, the state disables the card's buttons.
-  const answeredRef = useRef<ReadonlySet<string>>(new Set());
-  const [answered, setAnswered] = useState<ReadonlySet<string>>(answeredRef.current);
+  const showError = useCallback((code: string) => setBanner(errorText(code)), []);
+  const { conn, state, activate } = useConnection({
+    token,
+    store,
+    restoredId,
+    onError: showError,
+    onRestoreFailed: (id) => setActiveId((current) => (current === id ? null : current)),
+    ...(createSocket ? { createSocket } : {}),
+  });
+  const { agents, groups, reload } = useCatalog(api, showError);
 
-  const fail = (err: unknown): void =>
-    setErrorMessage(errorText(err instanceof ApiError ? err.code : 'internal'));
-
-  useEffect(() => {
-    const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const c = createConnection({ url: `${protocol}//${location.host}/ws`, token });
-    conn.current = c;
-    const offState = c.onState(setConnState);
-    const offMessage = c.onMessage((m) => {
-      if (m.type === 'event') {
-        if (m.stored.sessionId === activeId.current) setSession((s) => applyEvent(s, m.stored));
-      } else if (m.type === 'subscribed') {
-        if (m.sessionId === restoring.current) restoring.current = null;
-      } else if (m.type === 'error') {
-        const stale = restoring.current;
-        if (m.code === 'not_found' && stale !== null) {
-          // The remembered session does not exist on this server: quietly start from an empty page.
-          restoring.current = null;
-          clearActiveSession();
-          c.forget(stale);
-          if (activeId.current === stale) {
-            activeId.current = null;
-            setSessionId(null);
-            setSession(initialState());
-          }
-          return;
-        }
-        setErrorMessage(errorText(m.code));
-      }
-    });
-    // Replays the whole history; the reducer's seq guard drops anything already shown.
-    if (activeId.current) c.send({ type: 'subscribe', sessionId: activeId.current, afterSeq: 0 });
-    return () => {
-      offState();
-      offMessage();
-      c.close();
-      conn.current = null;
-    };
-  }, [token]);
-
-  useEffect(() => {
-    let cancelled = false;
-    api
-      .agents()
-      .then((list) => {
-        if (cancelled) return;
-        setAgents(list);
-        setAgentId((current) => current || (list.find((a) => a.installed)?.id ?? ''));
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) fail(err);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [api]);
-
-  const startSession = async (e: FormEvent): Promise<void> => {
-    e.preventDefault();
-    setStarting(true);
-    setErrorMessage(null);
-    try {
-      const path = projectPath.trim();
-      const known = (await api.projects()).find((p) => p.path === path);
-      const project = known ?? (await api.addProject(projectName.trim(), path));
-      const row = await api.createSession(project.id, agentId);
-      activeId.current = row.id;
-      restoring.current = null;
-      saveActiveSession(row.id);
-      setSession(initialState());
-      setSessionId(row.id);
-      // The replay starts from our own last seq (0 for a new session).
-      conn.current?.send({ type: 'subscribe', sessionId: row.id, afterSeq: 0 });
-    } catch (err) {
-      fail(err);
-    } finally {
-      setStarting(false);
-    }
+  const select = (sessionId: string) => {
+    saveActiveSession(sessionId);
+    setActiveId(sessionId);
+    activate(sessionId);
   };
 
-  const send = (e: FormEvent): void => {
-    e.preventDefault();
-    const text = message.trim();
-    if (!sessionId || !text) return;
-    // Shown at once; the server journals the prompt as a user_message, which confirms this item.
-    if (conn.current?.send({ type: 'prompt', sessionId, text })) {
-      setSession((s) => addLocalUserMessage(s, text));
-      setMessage('');
-    } else {
-      setErrorMessage(errorText('network'));
-    }
+  const create = async ({ agentId, name, path }: NewSessionInput): Promise<void> => {
+    const known = (await api.projects()).find((p) => samePath(p.path, path));
+    const project = known ?? (await api.addProject(name, path));
+    const row = await api.createSession(project.id, agentId);
+    setBanner(null);
+    select(row.id);
+    reload();
   };
 
-  const respond = (requestId: string, optionId: string): void => {
-    if (!sessionId) return;
-    const plan = planAnswer(answeredRef.current, sessionId, requestId, optionId);
-    if (!plan) return;
-    if (!conn.current?.send(plan.message)) {
-      setErrorMessage(errorText('network'));
-      return;
-    }
-    answeredRef.current = plan.answered;
-    setAnswered(plan.answered);
-  };
-
-  const running = session.status === 'running';
-  const canStart = !starting && agentId !== '' && projectName.trim() !== '' && projectPath.trim() !== '';
-
-  return (
-    <Shell>
-      <div className="flex gap-4 text-sm text-neutral-600 dark:text-neutral-400">
-        <span>
-          {t('connection.label')}: {t(`connection.${connState}`)}
-        </span>
-        {sessionId && (
-          <span>
-            {t('status.label')}: {t(`status.${session.status}`)}
-          </span>
-        )}
-      </div>
-
-      {errorMessage && (
-        <div role="alert" className="flex items-center justify-between gap-2 rounded border border-red-400 bg-red-50 p-2 text-red-900 dark:bg-red-950 dark:text-red-200">
-          <span>{errorMessage}</span>
-          <button type="button" className={secondaryButton} onClick={() => setErrorMessage(null)}>
-            {t('error.dismiss')}
-          </button>
-        </div>
-      )}
-
-      <form onSubmit={startSession} className="flex flex-wrap items-end gap-2">
-        <label className="flex flex-col text-sm">
-          {t('setup.agent')}
-          <select className={input} value={agentId} onChange={(e) => setAgentId(e.target.value)}>
-            {agents.length === 0 && <option value="">{t('setup.agentNone')}</option>}
-            {agents.map((a) => (
-              <option key={a.id} value={a.id} disabled={!a.installed}>
-                {a.installed ? a.label : `${a.label} (${t('setup.agentNotInstalled')})`}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="flex flex-col text-sm">
-          {t('setup.projectName')}
-          <input className={input} value={projectName} onChange={(e) => setProjectName(e.target.value)} />
-        </label>
-        <label className="flex min-w-64 flex-1 flex-col text-sm">
-          {t('setup.projectPath')}
-          <input className={input} value={projectPath} onChange={(e) => setProjectPath(e.target.value)} />
-        </label>
-        <button type="submit" className={button} disabled={!canStart}>
-          {starting ? t('setup.starting') : t('setup.start')}
-        </button>
-      </form>
-
-      {sessionId && (
-        <>
-          <ul className="flex flex-col gap-2">
-            {session.items.map((item, index) => (
-              <li key={index}>
-                <ItemView
-                  item={item}
-                  answered={item.kind === 'permission' && answered.has(item.requestId)}
-                  onRespond={respond}
-                />
-              </li>
-            ))}
-          </ul>
-          <form onSubmit={send} className="flex gap-2">
-            <input
-              className={`${input} flex-1`}
-              value={message}
-              placeholder={t('chat.placeholder')}
-              onChange={(e) => setMessage(e.target.value)}
-            />
-            <button type="submit" className={button} disabled={!message.trim() || running}>
-              {t('chat.send')}
-            </button>
-            <button
-              type="button"
-              className={secondaryButton}
-              disabled={!running}
-              onClick={() => conn.current?.send({ type: 'cancel', sessionId })}
-            >
-              {t('chat.cancel')}
-            </button>
-          </form>
-        </>
-      )}
-    </Shell>
+  const row = groups.flatMap((g) => g.sessions).find((s) => s.id === activeId);
+  const agentLabel = row ? (agents.find((a) => a.id === row.agentId)?.label ?? row.agentId) : '';
+  const toggle = (
+    <button
+      type="button"
+      aria-label={t('sidebar.toggle')}
+      title={`${t('sidebar.toggle')} (Ctrl+B)`}
+      aria-expanded={sidebarOpen}
+      aria-controls="sidebar"
+      onClick={toggleSidebar}
+      className="rounded p-1 text-text-muted hover:bg-bg-subtle hover:text-text focus-visible:outline-2 focus-visible:outline-accent"
+    >
+      <SidebarIcon />
+    </button>
   );
-}
+  const dismiss = () => setBanner(null);
 
-function Labeled({ label, children }: { label: MessageKey; children: React.ReactNode }) {
   return (
-    <div>
-      <span className="text-xs font-semibold uppercase text-neutral-500">{t(label)}</span>
-      <div className="whitespace-pre-wrap">{children}</div>
+    <div className="flex h-dvh bg-bg text-text">
+      {sidebarOpen && (
+        <Sidebar
+          groups={groups}
+          activeId={activeId}
+          store={store}
+          agents={agents}
+          connection={state}
+          onSelect={select}
+          onNewSession={() => setDialogOpen(true)}
+        />
+      )}
+      <main className="flex min-w-0 flex-1 flex-col">
+        {activeId ? (
+          <ChatView
+            sessionId={activeId}
+            store={store}
+            send={(message) => conn?.send(message) ?? false}
+            agentLabel={agentLabel}
+            connection={state}
+            banner={banner}
+            onDismissBanner={dismiss}
+            onError={showError}
+            leading={toggle}
+          />
+        ) : (
+          <>
+            <ChatHeader leading={toggle} />
+            {banner && (
+              <div className="mx-auto w-full max-w-3xl px-4 pt-3">
+                <ErrorBanner message={banner} onDismiss={dismiss} />
+              </div>
+            )}
+            <div className="min-h-0 flex-1">
+              <EmptyState onNewSession={() => setDialogOpen(true)} />
+            </div>
+          </>
+        )}
+      </main>
+      <NewSessionDialog open={dialogOpen} agents={agents} onClose={() => setDialogOpen(false)} onCreate={create} />
     </div>
   );
-}
-
-type ItemViewProps = { item: Item; answered: boolean; onRespond: (requestId: string, optionId: string) => void };
-
-function ItemView({ item, answered, onRespond }: ItemViewProps) {
-  switch (item.kind) {
-    case 'user':
-      return <Labeled label="item.user">{item.text}</Labeled>;
-    case 'agent':
-      return <Labeled label="item.agent">{item.text}</Labeled>;
-    case 'thought':
-      return (
-        <div className="italic text-neutral-500">
-          <Labeled label="item.thought">{item.text}</Labeled>
-        </div>
-      );
-    case 'tool':
-      return (
-        <Labeled label="item.tool">
-          {item.title} ({item.status})
-        </Labeled>
-      );
-    case 'unsupported':
-      return <Labeled label="item.unsupported">{item.sessionUpdate}</Labeled>;
-    case 'error':
-      return (
-        <div role="alert" className="rounded border border-red-400 p-2 text-red-900 dark:text-red-200">
-          <Labeled label="item.error">{errorText(item.code)}</Labeled>
-        </div>
-      );
-    case 'permission':
-      return (
-        <div className="rounded border border-amber-400 p-2">
-          <Labeled label="permission.heading">{item.title}</Labeled>
-          {item.resolved ? (
-            <p className="text-sm text-neutral-500">{t('permission.resolved')}</p>
-          ) : (
-            <div className="mt-2 flex flex-wrap gap-2">
-              {/* Only the agent's own options: no extra button that would cancel the whole turn. */}
-              {item.options.map((o) => (
-                <button
-                  key={o.id}
-                  type="button"
-                  className={button}
-                  disabled={answered}
-                  onClick={() => onRespond(item.requestId, o.id)}
-                >
-                  {o.name}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-      );
-  }
 }
