@@ -10,7 +10,7 @@ function fakeDriver(scenario: string, command: string = process.execPath): Agent
   return {
     id: 'fake',
     label: 'Fake agent',
-    launch: () => ({ command, args: [FAKE_AGENT], env: { FAKE_SCENARIO: scenario } }),
+    launch: () => ({ command, args: [FAKE_AGENT], env: { FAKE_SCENARIO: scenario, FAKE_FAST: '1' } }),
     detect: async () => ({ installed: true }),
   };
 }
@@ -79,6 +79,60 @@ afterEach(async () => {
 });
 
 describe('AcpSession', () => {
+  it('rich scenario emits every item kind the chat UI renders', async () => {
+    const { session, events } = await start('rich');
+    const turn = session.prompt('go');
+    const req = await waitForEvent(events, 'permission_request');
+    expect(session.respondPermission(req.requestId, 'allow')).toBe(true);
+    await expect(turn).resolves.toBe('end_turn');
+
+    const at = (pred: (e: NormalizedEvent) => boolean, from = 0) => {
+      const i = events.findIndex((e, n) => n >= from && pred(e));
+      expect(i).toBeGreaterThanOrEqual(from);
+      return i;
+    };
+    const thought = at((e) => e.type === 'agent_thought');
+    const plan = at((e) => e.type === 'plan', thought);
+    const read = at((e) => e.type === 'tool_call' && e.kind === 'read', plan);
+    const perm = at((e) => e.type === 'permission_request', read);
+    const edit = at((e) => e.type === 'tool_call' && e.kind === 'edit', perm);
+    const exec = at((e) => e.type === 'tool_call' && e.kind === 'execute', edit);
+    const failed = at(
+      (e) => e.type === 'tool_call_update' && e.id === 'rich-exec' && e.patch.status === 'failed',
+      exec,
+    );
+    const message = at((e) => e.type === 'agent_message', failed);
+    at((e) => e.type === 'turn_end', message);
+
+    expect(events.filter((e) => e.type === 'agent_thought').length).toBeGreaterThanOrEqual(7);
+    expect(events.filter((e) => e.type === 'plan')).toHaveLength(4);
+    expect(events.filter((e) => e.type === 'agent_message').length).toBeGreaterThanOrEqual(8);
+    expect(events[edit]).toMatchObject({
+      content: [{ type: 'diff', oldText: expect.any(String), newText: expect.any(String) }],
+    });
+    const biggest = Math.max(
+      ...events.flatMap((e) =>
+        e.type === 'tool_call_update' && Array.isArray(e.patch.content)
+          ? (e.patch.content as Array<{ type: string; text?: string }>).map((c) =>
+              c.type === 'text' ? (c.text?.length ?? 0) : 0,
+            )
+          : [],
+      ),
+    );
+    expect(biggest).toBeGreaterThanOrEqual(30_000);
+
+    const markdown = events.flatMap((e) => (e.type === 'agent_message' ? [e.text] : [])).join('');
+    for (const needle of [
+      '|---',
+      '```ts',
+      '[click me](javascript:alert(1))',
+      '<script>alert(1)</script>',
+      '![tracker](http://example.invalid/pixel.png)',
+    ]) {
+      expect(markdown).toContain(needle);
+    }
+  });
+
   it('(a) basic: streams normalized events in order and resolves end_turn', async () => {
     const { session, events } = await start('basic');
     expect(session.acpSessionId).toBe('fake-session-1');
