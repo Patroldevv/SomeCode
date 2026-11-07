@@ -62,3 +62,14 @@ The logic lives in `apps/server/src/launcher/smoke.ts` (`runSmoke`) and is cover
 
 ## Results
 
+
+### 2026-11-07 — OpenCode 2.2.6 (not logged in; free `opencode/big-pickle` model)
+
+Launcher started with `--no-open` and a temp data dir; `node scripts/smoke.ts opencode /tmp/somecode-smoke "Merhaba de"`.
+
+- `GET /api/agents` → `opencode` installed, version `opencode v2.2.6`.
+- The ACP handshake and session creation worked against the real agent. Journal: `config_options` (model list from the agent, current value `opencode/big-pickle`), `status ready`, `user_message "Merhaba de"`, `status running`.
+- No `agent_message` or `turn_end` arrived within 90 s, and the smoke client ended with `smoke: FAILED timed out` (exit 1).
+- Cause is upstream, not SomeCode: `opencode run "Merhaba de"` run directly in the same directory also failed, retrying with `Upstream request failed: [overloaded] the server is overloaded` (`opencode auth list` shows no authenticated integrations).
+- Not verified yet: a full real-agent turn (thought, message, tool call, `turn_end`). Re-run this smoke when the provider is available or after `opencode auth login`.
+- Launcher stopped with SIGTERM and exited; no `fake-agent` or leftover `opencode acp` process remained.
