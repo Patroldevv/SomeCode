@@ -17,19 +17,23 @@ function lastSegment(path: string): string {
 
 /**
  * Native modal `<dialog>` for starting a session, controlled by `open`. `onCreate` does the work and rejects
- * with an `ApiError` on failure (shown here with `errorText`); on success the dialog resets and calls
- * `onClose`. The relative-path hint is only a hint: the server decides what a valid path is.
+ * with an `ApiError` on failure (shown here with `errorText`, or handed to `onError` when the dialog was closed
+ * meanwhile — a browser closes a modal on a second Escape even though `cancel` is prevented); on success the
+ * dialog resets and calls `onClose`. The relative-path hint is only a hint: the server decides what a valid path is.
  */
 export function NewSessionDialog({
   open,
   agents,
   onClose,
   onCreate,
+  onError,
 }: {
   open: boolean;
   agents: AgentInfo[];
   onClose: () => void;
   onCreate: (input: NewSessionInput) => Promise<void>;
+  /** A failure that arrives after the dialog was closed: shown by the app (its error banner). */
+  onError: (code: string) => void;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   const titleId = useId();
@@ -70,7 +74,9 @@ export function NewSessionDialog({
       setPath('');
       onClose();
     } catch (err) {
-      setError(errorText(err instanceof ApiError ? err.code : 'internal'));
+      const code = err instanceof ApiError ? err.code : 'internal';
+      if (ref.current?.open) setError(errorText(code));
+      else onError(code);
     } finally {
       busyRef.current = false;
       setBusy(false);

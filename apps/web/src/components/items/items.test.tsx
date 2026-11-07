@@ -146,6 +146,16 @@ describe('ToolCard', () => {
     expect(screen.getByRole('button', { name: /Edit a\.ts/ })).toHaveTextContent('+9 -3');
   });
 
+  it('names the edit size for screen readers with correct plurals in both languages', () => {
+    const edit = (oldText: string, newText: string, key: string) =>
+      tool({ key, toolKind: 'edit', title: `Edit ${key}`, content: [{ type: 'diff', path: 'a.ts', oldText, newText }] });
+    const { unmount } = render(<ToolCard item={edit('a\n', 'b\n', 'one')} />);
+    expect(screen.getByRole('button', { name: /Edit one/ })).toHaveAccessibleName(/1 line added, 1 line removed/);
+    unmount();
+    render(<ToolCard item={edit('a\n', 'b\nc\n', 'two')} />);
+    expect(screen.getByRole('button', { name: /Edit two/ })).toHaveAccessibleName(/2 lines added, 1 line removed/);
+  });
+
   it('diffs each edit once: re-renders with a new content array of the same strings, and expanding, reuse it', async () => {
     const user = userEvent.setup();
     const oldText = 'memo-a\nmemo-b\n';

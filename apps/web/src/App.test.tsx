@@ -4,7 +4,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { App, Client } from './App.tsx';
 import { en } from './i18n/en.ts';
 import { setLanguageForTests } from './i18n/index.ts';
-import type { Api, SessionInfo } from './lib/api.ts';
+import { ApiError, type Api, type SessionInfo } from './lib/api.ts';
 import type { SocketLike } from './lib/connection.ts';
 import { createSessionsStore, type SessionsStore } from './lib/sessionsStore.ts';
 
@@ -275,6 +275,43 @@ describe('Client', () => {
     await userEvent.keyboard('{Control>}b{/Control}');
     expect(screen.getByRole('navigation', { name: 'Sessions' })).toBeInTheDocument();
     expect(localStorage.getItem('somecode.sidebarOpen')).toBe('1');
+  });
+
+  it('Ctrl+B is ignored while a modal dialog is open and during IME composition', async () => {
+    await renderClient();
+    const sidebar = () => screen.queryByRole('navigation', { name: 'Sessions' });
+    fireEvent.keyDown(window, { key: 'b', ctrlKey: true, isComposing: true });
+    expect(sidebar()).toBeInTheDocument();
+    await userEvent.click(within(sidebar()!).getByRole('button', { name: 'New session' }));
+    expect(screen.getByRole('dialog')).toHaveAttribute('open');
+    await userEvent.keyboard('{Control>}b{/Control}');
+    expect(sidebar()).toBeInTheDocument();
+    expect(localStorage.getItem('somecode.sidebarOpen')).not.toBe('0');
+  });
+
+  it('a session creation that fails after the dialog was closed shows the app banner', async () => {
+    const api = fakeApi();
+    let fail!: (err: unknown) => void;
+    api.createSession.mockImplementation(() => new Promise((_resolve, reject) => (fail = reject)));
+    await renderClient(api);
+    await userEvent.click(within(screen.getByRole('navigation')).getByRole('button', { name: 'New session' }));
+    await userEvent.type(screen.getByRole('textbox', { name: 'Absolute project path' }), '/home/u/beta');
+    await userEvent.click(screen.getByRole('button', { name: 'Start session' }));
+    await waitFor(() => expect(api.createSession).toHaveBeenCalled());
+    // The browser force-closes the modal on a second Escape.
+    act(() => (screen.getByRole('dialog') as HTMLDialogElement).close());
+    await act(async () => fail(new ApiError('agent_not_installed')));
+    expect(screen.getByRole('alert')).toHaveTextContent(en['error.agent_not_installed']);
+  });
+
+  it('switching sessions clears the error banner', async () => {
+    sessionStorage.setItem('somecode.activeSession', 's1');
+    await renderClient(fakeApi([row('s1', Date.now() - 120_000), row('s2')]));
+    socket().open();
+    socket().receive({ type: 'error', code: 'turn_in_progress', message: 'busy' });
+    expect(screen.getByRole('alert')).toHaveTextContent(en['error.turn_in_progress']);
+    await userEvent.click(screen.getByRole('button', { name: /Claude Code · 1 min\. ago/ }));
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
   it('switching sessions resumes from the last seen seq and keeps each draft', async () => {

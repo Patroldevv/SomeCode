@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setLanguageForTests } from '../i18n/index.ts';
 import type { Item, PlanEntry, SessionStatus } from '../lib/sessionState.ts';
@@ -178,6 +178,46 @@ describe('MessageList', () => {
     const firstRow = rows()[0] as HTMLElement;
     expect(sticky.compareDocumentPosition(firstRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(rowKeys()).toEqual(['1', '2']);
+  });
+
+  it("the log's scroll-padding-top follows the sticky plan's measured height", () => {
+    // Every ResizeObserver (virtual-core's row measuring too) with the elements it watches.
+    const observers: { callback: () => void; targets: Set<Element> }[] = [];
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        entry: { callback: () => void; targets: Set<Element> };
+        constructor(callback: () => void) {
+          this.entry = { callback: () => callback(), targets: new Set() };
+          observers.push(this.entry);
+        }
+        observe(target: Element) {
+          this.entry.targets.add(target);
+        }
+        unobserve(target: Element) {
+          this.entry.targets.delete(target);
+        }
+        disconnect() {
+          this.entry.targets.clear();
+        }
+      },
+    );
+    try {
+      const plan: PlanEntry[] = [{ content: 'Read the code', status: 'in_progress', priority: 'medium' }];
+      const { rerender } = render(<List items={[user('1')]} plan={plan} />);
+      const log = screen.getByRole('log');
+      expect(log.style.scrollPaddingTop).toBe(`${ROW}px`); // its first measurement
+      const sticky = document.querySelector<HTMLElement>('[data-sticky-plan]') as HTMLElement;
+      Object.defineProperty(sticky, 'offsetHeight', { configurable: true, get: () => 132 });
+      const observer = observers.find((o) => o.targets.has(sticky));
+      expect(observer).toBeDefined();
+      act(() => observer!.callback());
+      expect(log.style.scrollPaddingTop).toBe('132px');
+      rerender(<List items={[user('1')]} plan={null} />);
+      expect(log.style.scrollPaddingTop).toBe('0px');
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('shows no plan box for a null or empty plan', () => {

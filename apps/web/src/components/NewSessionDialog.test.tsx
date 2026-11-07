@@ -20,6 +20,7 @@ function renderDialog(over: Partial<React.ComponentProps<typeof NewSessionDialog
     agents,
     onClose: vi.fn(),
     onCreate: vi.fn(async (_input: NewSessionInput) => {}),
+    onError: vi.fn(),
     ...over,
   };
   const view = render(<NewSessionDialog {...props} />);
@@ -124,6 +125,34 @@ describe('NewSessionDialog', () => {
     expect(props.onClose).not.toHaveBeenCalled();
     await act(async () => finish());
     expect(props.onClose).toHaveBeenCalledOnce();
+  });
+
+  it('a failure after the dialog was closed meanwhile goes to onError, not the hidden dialog', async () => {
+    let fail!: (err: unknown) => void;
+    const { props, rerender } = renderDialog({
+      onCreate: vi.fn(() => new Promise<void>((_resolve, reject) => (fail = reject))),
+    });
+    await userEvent.type(path(), '/home/u/app');
+    await userEvent.click(submit());
+    // The browser force-closes the modal (second Escape): the dialog's close event tells the parent.
+    act(() => (screen.getByRole('dialog', { hidden: true }) as HTMLDialogElement).close());
+    expect(props.onClose).toHaveBeenCalledOnce();
+    rerender(<NewSessionDialog {...props} open={false} />);
+    await act(async () => fail(new ApiError('bad_request')));
+    expect(props.onError).toHaveBeenCalledExactlyOnceWith('bad_request');
+    expect(screen.queryByRole('alert', { hidden: true })).toBeNull();
+  });
+
+  it('a failure while the dialog is open is shown in it, not via onError', async () => {
+    const { props } = renderDialog({
+      onCreate: vi.fn(async () => {
+        throw new ApiError('bad_request');
+      }),
+    });
+    await userEvent.type(path(), '/x');
+    await userEvent.click(submit());
+    expect(await screen.findByRole('alert')).toHaveTextContent(en['error.bad_request']);
+    expect(props.onError).not.toHaveBeenCalled();
   });
 
   it('Cancel and Escape close through onClose', async () => {

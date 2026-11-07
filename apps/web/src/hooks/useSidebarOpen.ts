@@ -2,7 +2,10 @@ import { useCallback, useEffect, useState } from 'react';
 import { matchesShortcut } from '../lib/shortcuts.ts';
 import { loadSidebarOpen, saveSidebarOpen } from '../lib/sidebarPrefs.ts';
 
-/** The sidebar's open state, remembered across page loads and toggled by Ctrl+B (Command+B on macOS). */
+/**
+ * The sidebar's open state, remembered across page loads and toggled by Ctrl+B (Command+B on macOS). The
+ * shortcut is ignored while a modal dialog is open (the sidebar is behind it) and during IME composition.
+ */
 export function useSidebarOpen(): [open: boolean, toggle: () => void] {
   const [open, setOpen] = useState(loadSidebarOpen);
   const toggle = useCallback(() => setOpen((o) => !o), []);
@@ -13,7 +16,8 @@ export function useSidebarOpen(): [open: boolean, toggle: () => void] {
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.repeat || !matchesShortcut(e, 'ctrl+b')) return;
+      if (e.repeat || e.isComposing || !matchesShortcut(e, 'ctrl+b')) return;
+      if (document.querySelector('dialog[open]')) return;
       e.preventDefault();
       toggle();
     };

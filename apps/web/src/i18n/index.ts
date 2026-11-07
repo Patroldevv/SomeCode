@@ -33,6 +33,20 @@ export function t(key: MessageKey, params?: MessageParams): string {
   return interpolate(table[key], params);
 }
 
+/** A message family with CLDR plural forms: `<base>.one`, `<base>.other` (and more where a language needs them). */
+export type PluralBase = MessageKey extends infer K ? (K extends `${infer B}.other` ? B : never) : never;
+
+/**
+ * The `<base>.<category>` message for `count` (`Intl.PluralRules` of the UI language), with `{count}` filled in;
+ * falls back to `<base>.other` for a category the table does not spell out.
+ */
+export function plural(base: PluralBase, count: number, params?: MessageParams): string {
+  const lang = currentLanguage();
+  const category = new Intl.PluralRules(lang).select(count);
+  const key = `${base}.${category}`;
+  return t(key in en ? (key as MessageKey) : (`${base}.other` as MessageKey), { ...params, count });
+}
+
 /** One-sentence message for a server error code (the raw server message is never shown). */
 export function errorText(code: string, params?: MessageParams): string {
   const key = `error.${code}`;

@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { HighlightedLine } from '../lib/highlight.ts';
 import { highlightTokens } from '../lib/highlight.ts';
 import { COST_FACTOR, LARGE_CODE, MIN_GAP_MS, STABLE_MS } from './CodeBlock.tsx';
+import { setLanguageForTests } from '../i18n/index.ts';
 import { Markdown } from './Markdown.tsx';
 
 // Deterministic: no real Shiki in jsdom (lib/highlight.test.ts covers it in node).
@@ -74,12 +75,15 @@ describe('Markdown: untrusted links', () => {
     expect(link).toHaveAttribute('rel', 'noopener noreferrer');
   });
 
-  it('keeps mailto: and #fragment links (fragments stay in the same tab)', () => {
-    render(<Markdown text="[m](mailto:x@y.z) [f](#bolum)" />);
+  it('keeps mailto: and in-document #user-content- anchors (same tab); other fragments are plain text', () => {
+    render(<Markdown text="[m](mailto:x@y.z) [f](#user-content-fn-1) [b](#bolum) [tok](#token=evil)" />);
     expect(screen.getByRole('link', { name: 'm' })).toHaveAttribute('href', 'mailto:x@y.z');
     const fragment = screen.getByRole('link', { name: 'f' });
-    expect(fragment).toHaveAttribute('href', '#bolum');
+    expect(fragment).toHaveAttribute('href', '#user-content-fn-1');
     expect(fragment).not.toHaveAttribute('target');
+    expect(screen.queryByRole('link', { name: 'b' })).toBeNull();
+    expect(screen.queryByRole('link', { name: 'tok' })).toBeNull();
+    expect(screen.getByText('tok')).toBeInTheDocument();
   });
 
   it('GFM bare URLs become safe external links', () => {
@@ -210,6 +214,41 @@ describe('Markdown: GFM and code', () => {
     expect(ref.getAttribute('aria-describedby')).toBe(heading.id);
 
     expect(container.querySelector('input[type="checkbox"]')).toBeChecked();
+  });
+
+  it('footnote labels follow the UI language (Turkish), the heading stays screen-reader-only', () => {
+    setLanguageForTests('tr');
+    try {
+      const { container } = render(<Markdown text={'a[^1] b[^1]\n\n[^1]: not'} />);
+      const heading = container.querySelector('section h2')!;
+      expect(heading).toHaveTextContent('Dipnotlar');
+      expect(heading).toHaveClass('sr-only');
+      const backs = [...container.querySelectorAll('section li a')];
+      expect(backs.map((a) => a.getAttribute('aria-label'))).toEqual([
+        '1. göndermeye geri dön',
+        '1-2. göndermeye geri dön',
+      ]);
+    } finally {
+      setLanguageForTests(null);
+    }
+  });
+
+  it('footnotes with non-word labels still link both ways', () => {
+    const { container } = render(<Markdown text={'a[^Not.ä]\n\n[^Not.ä]: text'} />);
+    const ref = container.querySelector<HTMLAnchorElement>('sup a');
+    expect(ref).not.toBeNull();
+    expect(container.querySelector('section li a')).not.toBeNull();
+  });
+
+  it('footnote labels in English', () => {
+    setLanguageForTests('en');
+    try {
+      const { container } = render(<Markdown text={'a[^1]\n\n[^1]: note'} />);
+      expect(container.querySelector('section h2')).toHaveTextContent('Footnotes');
+      expect(container.querySelector('section li a')).toHaveAttribute('aria-label', 'Back to reference 1');
+    } finally {
+      setLanguageForTests(null);
+    }
   });
 
   it('inline code is not a block', () => {

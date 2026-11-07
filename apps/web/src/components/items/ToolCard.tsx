@@ -1,5 +1,5 @@
 import { useId, useState } from 'react';
-import { t } from '../../i18n/index.ts';
+import { plural, t } from '../../i18n/index.ts';
 import { diffStats } from '../../lib/diffView.ts';
 import type { ToolItem } from '../../lib/sessionState.ts';
 import { ChevronIcon } from '../icons.tsx';
@@ -55,7 +55,7 @@ export function ToolCard({ item, expanded, onToggle }: { item: ToolItem; expande
               <span aria-hidden="true">
                 <span className="text-success">+{stats.added}</span> <span className="text-danger">-{stats.removed}</span>
               </span>
-              <span className="sr-only"> {t('diff.stats', stats)}</span>
+              <span className="sr-only"> {t('diff.stats', { added: plural('diff.added', stats.added), removed: plural('diff.removed', stats.removed) })}</span>
             </span>
           )}
           <ChevronIcon

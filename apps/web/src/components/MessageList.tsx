@@ -115,6 +115,8 @@ export function MessageList({
         aria-live="off"
         tabIndex={0}
         onScroll={onScroll}
+        // scrollIntoView / focus scrolling must not land a row under the sticky plan.
+        style={{ scrollPaddingTop: planHeight }}
         className="min-h-0 flex-1 overflow-y-auto overscroll-contain focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
       >
         {showPlan && (

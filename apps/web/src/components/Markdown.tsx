@@ -1,6 +1,13 @@
 import { memo } from 'react';
-import ReactMarkdown, { defaultUrlTransform, type Components, type ExtraProps, type UrlTransform } from 'react-markdown';
+import ReactMarkdown, {
+  defaultUrlTransform,
+  type Components,
+  type ExtraProps,
+  type Options,
+  type UrlTransform,
+} from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { t } from '../i18n/index.ts';
 import { splitMarkdownBlocks } from '../lib/markdownBlocks.ts';
 import { safeHref } from '../lib/safeUrl.ts';
 import { CodeBlock } from './CodeBlock.tsx';
@@ -24,6 +31,16 @@ function textOf(node: HastNode): string {
 const urlTransform: UrlTransform = (url) => (defaultUrlTransform(url) ? (safeHref(url) ?? '') : '');
 
 const remarkPlugins = [remarkGfm];
+
+/** GFM footnote section labels in the UI language (the heading itself stays screen-reader-only). */
+const footnoteOptions = (): NonNullable<Options['remarkRehypeOptions']> => ({
+  footnoteLabel: t('markdown.footnotes'),
+  // Same numbering as mdast-util-to-hast's default: `1`, and `1-2` for a second reference to the same note.
+  footnoteBackLabel: (referenceIndex, rereferenceIndex) =>
+    t('markdown.footnoteBack', {
+      n: `${referenceIndex + 1}${rereferenceIndex > 1 ? `-${rereferenceIndex}` : ''}`,
+    }),
+});
 
 const components: Components = {
   // `id` / `aria-label` / `aria-describedby` carry GFM footnote anchors and their accessible labels.
@@ -111,7 +128,12 @@ const components: Components = {
  */
 const MarkdownBlock = memo(function MarkdownBlock({ text }: { text: string }) {
   return (
-    <ReactMarkdown remarkPlugins={remarkPlugins} components={components} urlTransform={urlTransform}>
+    <ReactMarkdown
+      remarkPlugins={remarkPlugins}
+      remarkRehypeOptions={footnoteOptions()}
+      components={components}
+      urlTransform={urlTransform}
+    >
       {text}
     </ReactMarkdown>
   );

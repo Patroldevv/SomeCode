@@ -58,6 +58,8 @@ export function Client({ token, api: injectedApi, createSocket, store: injectedS
   const { agents, groups, reload } = useCatalog(api, showError);
 
   const select = (sessionId: string) => {
+    // A banner is about the session it happened in.
+    setBanner(null);
     saveActiveSession(sessionId);
     setActiveId(sessionId);
     activate(sessionId);
@@ -67,7 +69,6 @@ export function Client({ token, api: injectedApi, createSocket, store: injectedS
     const known = (await api.projects()).find((p) => samePath(p.path, path));
     const project = known ?? (await api.addProject(name, path));
     const row = await api.createSession(project.id, agentId);
-    setBanner(null);
     select(row.id);
     reload();
   };
@@ -129,7 +130,13 @@ export function Client({ token, api: injectedApi, createSocket, store: injectedS
           </>
         )}
       </main>
-      <NewSessionDialog open={dialogOpen} agents={agents} onClose={() => setDialogOpen(false)} onCreate={create} />
+      <NewSessionDialog
+        open={dialogOpen}
+        agents={agents}
+        onClose={() => setDialogOpen(false)}
+        onCreate={create}
+        onError={showError}
+      />
     </div>
   );
 }
