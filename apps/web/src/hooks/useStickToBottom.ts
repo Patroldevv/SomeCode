@@ -8,6 +8,20 @@ export type ScrollTarget = ScrollMetrics & Pick<EventTarget, 'addEventListener' 
 const UP_KEYS = new Set(['ArrowUp', 'PageUp', 'Home']);
 const LISTEN = { passive: true } as const;
 
+/**
+ * Whether the gesture that started on `target` scrolls an element nested inside `container` rather than the
+ * container itself: some ancestor of `target` (strictly inside the container) can still scroll up. The
+ * browser scrolls that inner scroller first (tool output, diffs, the plan box); the list only moves once it
+ * is at its top (scroll chaining), and then the intent counts again.
+ */
+function innerScrollsUp(target: EventTarget | null, container: unknown): boolean {
+  if (typeof Element === 'undefined') return false;
+  for (let node = target instanceof Element ? target : null; node && node !== container; node = node.parentElement) {
+    if (node.scrollTop > 0 && node.scrollHeight > node.clientHeight) return true;
+  }
+  return false;
+}
+
 export type StickToBottom = {
   /** Following the end: new content scrolls the view down. */
   pinned: boolean;
@@ -29,7 +43,9 @@ export type StickToBottom = {
  * (`deltaY < 0`), an up key (ArrowUp / PageUp / Home / Shift+Space), a touch drag whose finger moves down
  * (content scrolls up), or a pointerdown on the container itself rather than a child (its scrollbar). It
  * unpins at once, so the next streamed chunk does not snap a smooth (multi-frame) gesture back to the end.
- * Intent is ignored while there is nothing above to scroll to (`scrollTop === 0`).
+ * Intent is ignored while there is nothing above to scroll to (`scrollTop === 0`), for mostly horizontal
+ * gestures (a sideways swipe over a code block: `|dx| >= |dy|`), and while an inner scroller under the
+ * pointer/finger can still scroll up itself (the list does not move then).
  *
  * Scroll events re-pin only when the view moved DOWN to within the threshold of the end (so the first,
  * small frames of an upward gesture never re-pin). As a fallback, a user scroll up past the threshold also
@@ -96,22 +112,32 @@ export function useStickToBottom({
       ownScrollRef.current = false; // the coming scroll events are the user's
       setPinned(false);
     };
-    let touchY: number | null = null;
+    let touch: { x: number; y: number } | null = null;
     const onWheel = (e: Event) => {
-      if ((e as WheelEvent).deltaY < 0) intendUp();
+      const { deltaX = 0, deltaY } = e as WheelEvent;
+      if (deltaY >= 0 || Math.abs(deltaX) >= Math.abs(deltaY)) return;
+      if (innerScrollsUp(e.target, el)) return;
+      intendUp();
     };
     const onKeyDown = (e: Event) => {
       const { key, shiftKey } = e as KeyboardEvent;
       if (UP_KEYS.has(key) || (key === ' ' && shiftKey)) intendUp();
     };
+    const point = (e: Event): { x: number; y: number } | null => {
+      const t = (e as TouchEvent).touches[0];
+      return t ? { x: t.clientX ?? 0, y: t.clientY } : null;
+    };
     const onTouchStart = (e: Event) => {
-      touchY = (e as TouchEvent).touches[0]?.clientY ?? null;
+      touch = point(e);
     };
     const onTouchMove = (e: Event) => {
-      const y = (e as TouchEvent).touches[0]?.clientY;
-      if (y === undefined || touchY === null) return;
-      if (y > touchY) intendUp(); // finger moves down: content scrolls up
-      touchY = y;
+      const next = point(e);
+      if (next === null || touch === null) return;
+      const dx = next.x - touch.x;
+      const dy = next.y - touch.y;
+      touch = next;
+      // Finger moves down (content scrolls up), mostly vertically, and not an inner scroller's own scroll.
+      if (dy > 0 && Math.abs(dx) <= Math.abs(dy) && !innerScrollsUp(e.target, el)) intendUp();
     };
     const onPointerDown = (e: Event) => {
       if (e.target === (el as unknown)) intendUp(); // on the container, not a row: its scrollbar

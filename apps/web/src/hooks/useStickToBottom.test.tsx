@@ -291,4 +291,82 @@ describe('useStickToBottom', () => {
       expect(remove).toHaveBeenCalledTimes(added.length);
     });
   });
+
+  describe('nested scrollers and sideways gestures do not unpin (ui-verification item 14)', () => {
+    /** Gives a real element layout metrics; `scrollTop` is writable (clamped). */
+    function scroller<T extends HTMLElement>(node: T, clientHeight: number, scrollHeight: number, top = 0): T {
+      let value = top;
+      Object.defineProperties(node, {
+        clientHeight: { configurable: true, value: clientHeight },
+        scrollHeight: { configurable: true, value: scrollHeight },
+        scrollTop: {
+          configurable: true,
+          get: () => value,
+          set: (v: number) => (value = Math.max(0, Math.min(v, scrollHeight - clientHeight))),
+        },
+      });
+      return node;
+    }
+
+    /** The list (pinned at its end) with a row holding an inner scroller (tool output) and a <pre>. */
+    function setupNested(innerTop: number) {
+      const list = scroller(document.createElement('div'), 100, 1000);
+      const row = list.appendChild(document.createElement('div'));
+      scroller(row, 40, 40); // a plain row: no scrolling of its own
+      const inner = scroller(row.appendChild(document.createElement('div')), 80, 400, innerTop);
+      const line = inner.appendChild(document.createElement('span'));
+      document.body.appendChild(list);
+      const hook = renderHook(() =>
+        useStickToBottom({ scrollRef: { current: list }, itemCount: 3, tail: 'a', contentSize: 1000 }),
+      );
+      act(() => hook.result.current.onScroll());
+      return { list, inner, line, ...hook };
+    }
+    afterEach(() => {
+      document.body.replaceChildren();
+    });
+
+    const fire = (target: Element, type: string, props: Record<string, unknown>) =>
+      act(() => {
+        target.dispatchEvent(Object.assign(new Event(type, { bubbles: true }), props));
+      });
+
+    it('a wheel up inside a child that can still scroll up keeps the list pinned', () => {
+      const { line, result } = setupNested(120);
+      fire(line, 'wheel', { deltaX: 0, deltaY: -60 });
+      expect(result.current.pinned).toBe(true);
+    });
+
+    it('a wheel up inside a child already at its top unpins (it chain-scrolls the list)', () => {
+      const { line, result } = setupNested(0);
+      fire(line, 'wheel', { deltaX: 0, deltaY: -60 });
+      expect(result.current.pinned).toBe(false);
+    });
+
+    it('a mostly horizontal wheel (sideways swipe over a code block) keeps the list pinned', () => {
+      const { line, list, result } = setupNested(0);
+      fire(line, 'wheel', { deltaX: -40, deltaY: -3 });
+      fire(list, 'wheel', { deltaX: 25, deltaY: -25 });
+      expect(result.current.pinned).toBe(true);
+      fire(list, 'wheel', { deltaX: 3, deltaY: -40 });
+      expect(result.current.pinned).toBe(false);
+    });
+
+    it('a touch drag inside a child that can still scroll up keeps the list pinned', () => {
+      const { line, result } = setupNested(120);
+      fire(line, 'touchstart', { touches: [{ clientX: 50, clientY: 300 }] });
+      fire(line, 'touchmove', { touches: [{ clientX: 50, clientY: 340 }] });
+      expect(result.current.pinned).toBe(true);
+    });
+
+    it('a touch drag inside a child at its top unpins; a mostly horizontal one does not', () => {
+      const { line, result } = setupNested(0);
+      fire(line, 'touchstart', { touches: [{ clientX: 50, clientY: 300 }] });
+      fire(line, 'touchmove', { touches: [{ clientX: 120, clientY: 310 }] }); // sideways swipe
+      expect(result.current.pinned).toBe(true);
+      fire(line, 'touchmove', { touches: [{ clientX: 125, clientY: 350 }] });
+      expect(result.current.pinned).toBe(false);
+    });
+  });
 });
+
