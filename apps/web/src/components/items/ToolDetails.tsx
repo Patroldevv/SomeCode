@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useMemo, type ReactNode } from 'react';
 import { t } from '../../i18n/index.ts';
 import { groupDigits, prettyValue, truncateOutput } from '../../lib/format.ts';
 import type { ToolItem } from '../../lib/sessionState.ts';
@@ -33,9 +33,9 @@ function Mono({ text }: { text: string }) {
 }
 
 function Output({ item }: { item: ToolItem }) {
-  if (item.content.length === 0) {
-    return item.rawOutput === undefined ? null : <Mono text={prettyValue(item.rawOutput)} />;
-  }
+  const rawOutput = item.rawOutput;
+  const raw = useMemo(() => (rawOutput === undefined ? null : prettyValue(rawOutput)), [rawOutput]);
+  if (item.content.length === 0) return raw === null ? null : <Mono text={raw} />;
   return (
     <div className="space-y-2">
       {item.content.map((block, i) => {
@@ -59,14 +59,16 @@ function Output({ item }: { item: ToolItem }) {
 
 /** The expanded body of a tool card: the raw input and what the tool produced. */
 export function ToolDetails({ item }: { item: ToolItem }) {
-  const hasInput = item.rawInput !== undefined;
+  const rawInput = item.rawInput;
+  const input = useMemo(() => (rawInput === undefined ? null : prettyValue(rawInput)), [rawInput]);
+  const hasInput = input !== null;
   const hasOutput = item.content.length > 0 || item.rawOutput !== undefined;
   if (!hasInput && !hasOutput) return <p className="text-xs text-text-muted">{t('tool.noDetails')}</p>;
   return (
     <div className="space-y-3">
       {hasInput && (
         <Section label={t('tool.input')}>
-          <Mono text={prettyValue(item.rawInput)} />
+          <Mono text={input} />
         </Section>
       )}
       {hasOutput && (

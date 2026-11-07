@@ -1,5 +1,24 @@
-import { describe, expect, it } from 'vitest';
-import { MAX_DIFF_LINES, diffLines, diffStats } from './diffView.ts';
+import * as jsdiff from 'diff';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  EXACT_DIFF_MAX_CHARS,
+  MAX_DIFF_CHARS,
+  MAX_DIFF_LINES,
+  MAX_LINE_CHARS,
+  buildDiff,
+  diffLines,
+  diffStats,
+} from './diffView.ts';
+
+// Pass-through spy on the line-diff engine (counts calls, keeps real behaviour).
+vi.mock('diff', async (importOriginal) => {
+  const real = await importOriginal<typeof import('diff')>();
+  return { ...real, diffLines: vi.fn(real.diffLines) };
+});
+const engine = vi.mocked(jsdiff.diffLines);
+beforeEach(() => {
+  engine.mockClear();
+});
 
 const lines = (n: number, prefix = 'line') => Array.from({ length: n }, (_, i) => `${prefix} ${i + 1}`).join('\n') + '\n';
 
@@ -85,5 +104,124 @@ describe('diffLines', () => {
     expect(created.at(-1)).toEqual({ type: 'gap', text: '' });
     const rewritten = diffLines(huge, lines(10_000, 'other'));
     expect(rewritten.length).toBeLessThanOrEqual(2001);
+  });
+});
+
+/** Adds and removals counted from an uncollapsed `diffLines` (context large enough to never gap). */
+function counted(oldText: string | null, newText: string) {
+  const out = diffLines(oldText, newText, 1_000_000);
+  return { added: out.filter((l) => l.type === 'add').length, removed: out.filter((l) => l.type === 'del').length };
+}
+
+describe('cost ceiling', () => {
+  it('skips the line diff above the size threshold and still answers a 10 000-line rewrite fast', () => {
+    const before = lines(10_000);
+    const after = lines(10_000, 'other');
+    expect(before.length + after.length).toBeGreaterThan(EXACT_DIFF_MAX_CHARS);
+    const started = Date.now();
+    const stats = diffStats(before, after);
+    const view = buildDiff(before, after);
+    expect(Date.now() - started).toBeLessThan(300);
+    expect(engine).not.toHaveBeenCalled();
+    expect(view.exact).toBe(false);
+    expect(stats).toEqual({ added: 10_000, removed: 10_000 });
+    expect(view.lines.length).toBeLessThanOrEqual(MAX_DIFF_LINES + 1);
+  });
+
+  it('gives up on a line diff whose edit is too large and falls back, below the size threshold too', () => {
+    const before = lines(1500, 'a');
+    const after = lines(1500, 'b');
+    expect(before.length + after.length).toBeLessThan(EXACT_DIFF_MAX_CHARS);
+    const started = Date.now();
+    const view = buildDiff(before, after);
+    expect(Date.now() - started).toBeLessThan(300);
+    expect(engine).toHaveBeenCalledTimes(1);
+    expect(view.exact).toBe(false);
+    expect(diffStats(before, after)).toEqual({ added: 1500, removed: 1500 });
+  });
+
+  it('the fallback keeps common leading and trailing lines as context', () => {
+    const before = lines(15_000);
+    expect(before.length * 2).toBeGreaterThan(EXACT_DIFF_MAX_CHARS);
+    const after = before.replace('line 5000\n', 'X\nY\n');
+    const view = buildDiff(before, after, 1);
+    expect(view.exact).toBe(false);
+    expect(view.lines).toEqual([
+      { type: 'gap', text: '' },
+      { type: 'context', text: 'line 4999' },
+      { type: 'del', text: 'line 5000' },
+      { type: 'add', text: 'X' },
+      { type: 'add', text: 'Y' },
+      { type: 'context', text: 'line 5001' },
+      { type: 'gap', text: '' },
+    ]);
+  });
+
+  it.each([
+    ['exact', lines(30), lines(30).replace('line 3\n', 'A\n').replace('line 20\n', 'B\nC\n')],
+    ['fallback (edit too large)', lines(800, 'p'), lines(700, 'q')],
+    ['fallback (size)', lines(15_000), lines(15_000).replace('line 7\n', 'Z\n').replace('line 9\n', '')],
+    ['new file', null, lines(40)],
+  ] as const)('diffStats agrees with diffLines: %s', (_mode, before, after) => {
+    expect(diffStats(before, after)).toEqual(counted(before, after));
+  });
+
+  it('computes each (oldText, newText) pair once, also for equal strings built separately', () => {
+    const before = lines(50, 'memo');
+    const after = before.replace('memo 10\n', 'changed\n');
+    diffStats(before, after);
+    diffLines(before, after);
+    buildDiff(before, after, 1);
+    diffStats(before.slice(0), `${after}`);
+    expect(engine).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('long content', () => {
+  it('cuts a 5 MB single line to the per-line cap plus an ellipsis', () => {
+    const view = buildDiff(null, 'y'.repeat(5_000_000));
+    expect(view.lines).toHaveLength(2);
+    const [line, gap] = view.lines;
+    expect(line!.type).toBe('add');
+    expect(line!.text.length).toBeLessThanOrEqual(MAX_LINE_CHARS + 1);
+    expect(line!.text.endsWith('…')).toBe(true);
+    expect(gap).toEqual({ type: 'gap', text: '' });
+    expect(view.truncated).toBe(true);
+  });
+
+  it('never splits a surrogate pair at the cut', () => {
+    const text = 'a'.repeat(MAX_LINE_CHARS - 1) + '😀' + 'b';
+    const [line] = diffLines(null, text);
+    expect(line!.text).toBe('a'.repeat(MAX_LINE_CHARS - 1) + '…');
+    expect(line!.text).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
+  });
+
+  it('stops at the total character budget with a trailing gap', () => {
+    const big = Array.from({ length: 300 }, (_, i) => `${i}`.padEnd(1000, 'x')).join('\n') + '\n';
+    const view = buildDiff(null, big);
+    expect(view.truncated).toBe(true);
+    expect(view.lines.at(-1)).toEqual({ type: 'gap', text: '' });
+    const chars = view.lines.reduce((n, l) => n + l.text.length, 0);
+    expect(chars).toBeLessThanOrEqual(MAX_DIFF_CHARS + MAX_LINE_CHARS);
+    expect(view.lines.length).toBeLessThan(300);
+  });
+
+  it('is not truncated when everything fits', () => {
+    expect(buildDiff('a\n', 'b\n').truncated).toBe(false);
+  });
+});
+
+describe('line endings', () => {
+  it('treats CRLF and LF versions of the same text as unchanged', () => {
+    expect(diffStats('a\r\nb\r\n', 'a\nb\n')).toEqual({ added: 0, removed: 0 });
+    expect(diffLines('a\r\nb\r\n', 'a\nb\n')).toEqual([]);
+  });
+
+  it('never shows a trailing \\r in a displayed line', () => {
+    expect(diffLines('a\r\nb\r\n', 'a\r\nc\r\n')).toEqual([
+      { type: 'context', text: 'a' },
+      { type: 'del', text: 'b' },
+      { type: 'add', text: 'c' },
+    ]);
   });
 });

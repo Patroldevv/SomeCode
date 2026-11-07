@@ -62,6 +62,7 @@ export const tr: Record<MessageKey, string> = {
   'diff.removed': 'Silindi',
   'diff.gap': 'Değişmeyen satırlar gizlendi',
   'diff.noChanges': 'Değişiklik yok',
+  'diff.truncated': 'Bu fark tamamı gösterilemeyecek kadar uzun, bu yüzden bazı satırlar ya da satır parçaları gösterilmiyor.',
   'diff.stats': '{added} satır eklendi, {removed} satır silindi',
   'permission.heading': 'İzin isteniyor',
   'permission.resolved': 'Yanıtlandı',

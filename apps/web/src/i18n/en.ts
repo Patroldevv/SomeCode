@@ -60,6 +60,7 @@ export const en = {
   'diff.removed': 'Removed',
   'diff.gap': 'Unchanged lines hidden',
   'diff.noChanges': 'No changes',
+  'diff.truncated': 'This diff is too long to show in full, so some lines or parts of lines are not shown.',
   'diff.stats': '{added} lines added, {removed} removed',
   'permission.heading': 'Permission requested',
   'permission.resolved': 'Answered',

@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { t } from '../../i18n/index.ts';
-import { diffLines, type DiffLine } from '../../lib/diffView.ts';
+import { buildDiff, type DiffLine } from '../../lib/diffView.ts';
 
 // Tints derived from the status tokens, so both themes follow automatically.
 const ADD_BG = 'bg-[color-mix(in_srgb,var(--success)_13%,transparent)]';
@@ -48,9 +48,12 @@ function Row({ line }: { line: DiffLine }) {
   }
 }
 
-/** Inline unified diff of one file edit: path header, `+`/`-` gutter AND tint, `…` for hidden unchanged lines. */
+/**
+ * Inline unified diff of one file edit: path header, `+`/`-` gutter AND tint, `…` for hidden unchanged lines.
+ * Bounded by `buildDiff` (lines, per-line and total characters); a note says when something was cut.
+ */
 export function DiffView({ path, oldText, newText }: { path: string; oldText: string | null; newText: string }) {
-  const lines = useMemo(() => diffLines(oldText, newText), [oldText, newText]);
+  const { lines, truncated } = useMemo(() => buildDiff(oldText, newText), [oldText, newText]);
   return (
     <figure className="min-w-0 overflow-hidden rounded-md border border-border bg-bg font-mono text-xs leading-5">
       <figcaption className="flex min-w-0 items-center gap-2 border-b border-border bg-bg-subtle px-2.5 py-1 text-text-muted">
@@ -73,6 +76,9 @@ export function DiffView({ path, oldText, newText }: { path: string; oldText: st
             ))}
           </div>
         </div>
+      )}
+      {truncated && (
+        <p className="border-t border-border px-2.5 py-1 font-ui text-text-muted">{t('diff.truncated')}</p>
       )}
     </figure>
   );

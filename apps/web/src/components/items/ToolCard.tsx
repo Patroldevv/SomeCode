@@ -1,4 +1,4 @@
-import { useId, useMemo, useState } from 'react';
+import { useId, useState } from 'react';
 import { t } from '../../i18n/index.ts';
 import { diffStats } from '../../lib/diffView.ts';
 import type { ToolItem } from '../../lib/sessionState.ts';
@@ -6,7 +6,7 @@ import { ChevronIcon } from '../icons.tsx';
 import { ToolDetails } from './ToolDetails.tsx';
 import { ToolKindIcon, ToolStatus, toolKindLabel } from './ToolGlyphs.tsx';
 
-/** Sum of `+added -removed` over the tool's diff blocks; null when it has none. */
+/** Sum of `+added -removed` over the tool's diff blocks; null when it has none. Cheap: `diffStats` is cached per string pair. */
 function editStats(content: ToolItem['content']): { added: number; removed: number } | null {
   let found = false;
   let added = 0;
@@ -28,8 +28,7 @@ function editStats(content: ToolItem['content']): { added: number; removed: numb
 export function ToolCard({ item }: { item: ToolItem }) {
   const [open, setOpen] = useState(false);
   const id = useId();
-  const content = item.content;
-  const stats = useMemo(() => editStats(content), [content]);
+  const stats = editStats(item.content);
   const title = item.title.trim() || toolKindLabel(item.toolKind);
 
   return (

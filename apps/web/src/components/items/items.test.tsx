@@ -1,4 +1,5 @@
 import { render, screen, within } from '@testing-library/react';
+import * as jsdiff from 'diff';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setLanguageForTests } from '../../i18n/index.ts';
@@ -12,6 +13,13 @@ import { ThinkingBlock } from './ThinkingBlock.tsx';
 import { ToolCard } from './ToolCard.tsx';
 import { UnsupportedRow } from './UnsupportedRow.tsx';
 import { UserMessage } from './UserMessage.tsx';
+
+// Pass-through spy on the line-diff engine (counts calls, keeps real behaviour).
+vi.mock('diff', async (importOriginal) => {
+  const real = await importOriginal<typeof import('diff')>();
+  return { ...real, diffLines: vi.fn(real.diffLines) };
+});
+const engine = vi.mocked(jsdiff.diffLines);
 
 type PermissionItem = Extract<Item, { kind: 'permission' }>;
 
@@ -138,6 +146,20 @@ describe('ToolCard', () => {
     expect(screen.getByRole('button', { name: /Edit a\.ts/ })).toHaveTextContent('+9 -3');
   });
 
+  it('diffs each edit once: re-renders with a new content array of the same strings, and expanding, reuse it', async () => {
+    const user = userEvent.setup();
+    const oldText = 'memo-a\nmemo-b\n';
+    const newText = 'memo-a\nmemo-c\n';
+    const card = () => tool({ toolKind: 'edit', title: 'Edit m.ts', content: [{ type: 'diff', path: 'm.ts', oldText, newText }] });
+    engine.mockClear();
+    const { rerender } = render(<ToolCard item={card()} />);
+    rerender(<ToolCard item={card()} />);
+    rerender(<ToolCard item={{ ...card(), status: 'in_progress' }} />);
+    await user.click(screen.getByRole('button', { name: /Edit m\.ts/ }));
+    expect(screen.getByText('memo-c')).toBeVisible();
+    expect(engine).toHaveBeenCalledTimes(1);
+  });
+
   it('expands to show the input JSON and the output', async () => {
     const user = userEvent.setup();
     render(
@@ -217,6 +239,17 @@ describe('DiffView', () => {
     const lines = (s: string) => Array.from({ length: 20 }, (_, i) => (i === 10 ? s : `l${i}`)).join('\n') + '\n';
     render(<DiffView path="c.ts" oldText={lines('a')} newText={lines('b')} />);
     expect(screen.getAllByText('…')).toHaveLength(2);
+  });
+
+  it('cuts a huge diff and says so', () => {
+    const { container } = render(<DiffView path="min.js" oldText={null} newText={'y'.repeat(5_000_000)} />);
+    expect(container.querySelector('ins')!.textContent!.length).toBeLessThan(2_100);
+    expect(screen.getByText('This diff is too long to show in full, so some lines or parts of lines are not shown.')).toBeVisible();
+  });
+
+  it('shows no note when nothing was cut', () => {
+    render(<DiffView path="a.ts" oldText={'a\n'} newText={'b\n'} />);
+    expect(screen.queryByText(/too long to show/)).toBeNull();
   });
 
   it('scrolls long lines horizontally instead of wrapping them', () => {
