@@ -3,5 +3,8 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "dependencies": { "@somecode/protocol": "*" }
+  "dependencies": {
+    "@agentclientprotocol/sdk": "^2.4.0",
+    "@somecode/protocol": "*"
+  }
 }
