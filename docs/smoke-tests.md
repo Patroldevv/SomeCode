@@ -31,7 +31,7 @@ Expected:
 
 - The session becomes `ready`.
 - At least one `agent_message` and a `turn_end` appear.
-- After a page reload, the history is replayed identically.
+- After a page reload (F5, same tab or `--app` window), the same session is shown again and its history is replayed identically. The active session id is kept in the tab's `sessionStorage`; a new tab or window starts empty.
 
 If `opencode` is not logged in, the expected outcome is either a session that goes `disconnected` with an `auth_required` reason (the agent refused to start), or a turn that ends with an error item showing the `auth_required` message (the agent refused the prompt). That is not a defect of this plan; the login flow comes in a later plan.
 

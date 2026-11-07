@@ -105,6 +105,28 @@ describe('applyEvent', () => {
     expect(state.lastSeq).toBe(2);
   });
 
+  it('does not duplicate the user message when a replay from 0 brings it after the optimistic item', () => {
+    // Live state: the prompt was shown optimistically before its user_message (seq 3) arrived.
+    let state = run([ev(1, { type: 'status', status: 'ready' }), ev(2, { type: 'agent_message', text: 'a' })]);
+    state = addLocalUserMessage(state, 'hi');
+    const journal = [
+      ev(1, { type: 'status', status: 'ready' }),
+      ev(2, { type: 'agent_message', text: 'a' }),
+      ev(3, { type: 'user_message', text: 'hi' }),
+      ev(4, { type: 'status', status: 'running' }),
+    ];
+    // A re-subscribe from afterSeq 0 replays everything; seq 1-2 are dropped, seq 3 confirms the local item.
+    state = run(journal, state);
+    state = run(journal, state); // and a second identical replay changes nothing
+    expect(state.items).toEqual([
+      { kind: 'agent', text: 'a' },
+      { kind: 'user', text: 'hi' },
+    ]);
+    expect(state.lastSeq).toBe(4);
+    // After a reload (fresh state) the replay rebuilds the same transcript.
+    expect(run(journal).items).toEqual(state.items);
+  });
+
   it('merges a server user_message echo into the optimistic local item', () => {
     let state = addLocalUserMessage(initialState(), 'hi');
     state = applyEvent(state, ev(1, { type: 'user_message', text: 'hi' }));

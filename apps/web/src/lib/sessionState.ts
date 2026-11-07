@@ -34,7 +34,7 @@ export type SessionState = { lastSeq: number; items: Item[]; status: SessionStat
 
 export const initialState = (): SessionState => ({ lastSeq: 0, items: [], status: 'ready' });
 
-/** Optimistic item for a prompt the client just sent (the server journals no user_message for it). */
+/** Optimistic item for a prompt the client just sent; the server's journaled user_message confirms it. */
 export function addLocalUserMessage(state: SessionState, text: string): SessionState {
   return { ...state, items: [...state.items, { kind: 'user', text, local: true }] };
 }

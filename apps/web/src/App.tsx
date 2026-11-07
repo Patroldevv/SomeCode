@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { createApi, ApiError, type AgentInfo } from './lib/api.ts';
+import { clearActiveSession, loadActiveSession, saveActiveSession } from './lib/activeSession.ts';
 import { createConnection, type Connection, type ConnectionState } from './lib/connection.ts';
 import { planAnswer } from './lib/permissionAnswers.ts';
 import { loadToken } from './lib/token.ts';
@@ -31,14 +32,18 @@ function Shell({ children }: { children: React.ReactNode }) {
 function Client({ token }: { token: string }) {
   const [api] = useState(() => createApi(token));
   const conn = useRef<Connection | null>(null);
-  const activeId = useRef<string | null>(null);
+  // The session this tab showed before a reload (F5) is restored and replayed from seq 0.
+  const [restored] = useState(loadActiveSession);
+  const activeId = useRef<string | null>(restored);
+  /** Set until the server confirms the restored session exists (`subscribed`) or denies it. */
+  const restoring = useRef<string | null>(restored);
 
   const [connState, setConnState] = useState<ConnectionState>('connecting');
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [agentId, setAgentId] = useState('');
   const [projectName, setProjectName] = useState('');
   const [projectPath, setProjectPath] = useState('');
-  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [sessionId, setSessionId] = useState<string | null>(restored);
   const [session, setSession] = useState<SessionState>(initialState);
   const [message, setMessage] = useState('');
   const [starting, setStarting] = useState(false);
@@ -59,10 +64,27 @@ function Client({ token }: { token: string }) {
     const offMessage = c.onMessage((m) => {
       if (m.type === 'event') {
         if (m.stored.sessionId === activeId.current) setSession((s) => applyEvent(s, m.stored));
+      } else if (m.type === 'subscribed') {
+        if (m.sessionId === restoring.current) restoring.current = null;
       } else if (m.type === 'error') {
+        const stale = restoring.current;
+        if (m.code === 'not_found' && stale !== null) {
+          // The remembered session does not exist on this server: quietly start from an empty page.
+          restoring.current = null;
+          clearActiveSession();
+          c.forget(stale);
+          if (activeId.current === stale) {
+            activeId.current = null;
+            setSessionId(null);
+            setSession(initialState());
+          }
+          return;
+        }
         setErrorMessage(errorText(m.code));
       }
     });
+    // Replays the whole history; the reducer's seq guard drops anything already shown.
+    if (activeId.current) c.send({ type: 'subscribe', sessionId: activeId.current, afterSeq: 0 });
     return () => {
       offState();
       offMessage();
@@ -98,6 +120,8 @@ function Client({ token }: { token: string }) {
       const project = known ?? (await api.addProject(projectName.trim(), path));
       const row = await api.createSession(project.id, agentId);
       activeId.current = row.id;
+      restoring.current = null;
+      saveActiveSession(row.id);
       setSession(initialState());
       setSessionId(row.id);
       // The replay starts from our own last seq (0 for a new session).
@@ -113,7 +137,7 @@ function Client({ token }: { token: string }) {
     e.preventDefault();
     const text = message.trim();
     if (!sessionId || !text) return;
-    // The server journals no user_message for prompts, so the item is added locally.
+    // Shown at once; the server journals the prompt as a user_message, which confirms this item.
     if (conn.current?.send({ type: 'prompt', sessionId, text })) {
       setSession((s) => addLocalUserMessage(s, text));
       setMessage('');

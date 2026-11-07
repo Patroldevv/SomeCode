@@ -87,6 +87,20 @@ describe('createConnection', () => {
     expect(FakeSocket.all).toHaveLength(4);
   });
 
+  it('sends a subscribe made before open on open, and forget() drops it from later reconnects', () => {
+    const conn = createConnection({ url: 'ws://h/ws', token: 't', createSocket: (u) => new FakeSocket(u) });
+    expect(conn.send({ type: 'subscribe', sessionId: 'gone', afterSeq: 0 })).toBe(false);
+    const first = FakeSocket.all[0]!;
+    first.open();
+    expect(first.sent).toEqual([{ type: 'subscribe', sessionId: 'gone', afterSeq: 0 }]);
+    conn.forget('gone');
+    first.drop();
+    vi.advanceTimersByTime(1000);
+    const second = FakeSocket.all[1]!;
+    second.open();
+    expect(second.sent).toEqual([]);
+  });
+
   it('does not reconnect after close()', () => {
     const conn = createConnection({ url: 'ws://h/ws', token: 't', createSocket: (u) => new FakeSocket(u) });
     FakeSocket.all[0]!.open();

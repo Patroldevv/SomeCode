@@ -23,6 +23,8 @@ export type ConnectionOptions = {
 export type Connection = {
   /** False when the message could not be sent right now (socket not open). Subscribes are remembered. */
   send(message: ClientMessage): boolean;
+  /** Stops re-subscribing to a session on reconnect (e.g. the server said it does not exist). */
+  forget(sessionId: string): void;
   onMessage(cb: (message: ServerMessage) => void): () => void;
   onState(cb: (state: ConnectionState) => void): () => void;
   close(): void;
@@ -102,6 +104,9 @@ export function createConnection(opts: ConnectionOptions): Connection {
     send(message) {
       if (message.type === 'subscribe') subscriptions.set(message.sessionId, message.afterSeq);
       return transmit(message);
+    },
+    forget(sessionId) {
+      subscriptions.delete(sessionId);
     },
     onMessage(cb) {
       messageListeners.add(cb);
