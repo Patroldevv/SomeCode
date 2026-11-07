@@ -2,6 +2,7 @@ import { statSync } from 'node:fs';
 import { SomeCodeError, type NormalizedEvent, type StoredEvent } from '@somecode/protocol';
 import { AcpSession } from '../acp/session.ts';
 import type { AgentRegistry } from '../agents/registry.ts';
+import type { AgentDriver } from '../agents/types.ts';
 import type { SessionRow, Store } from '../store/store.ts';
 
 type Listener = (e: StoredEvent) => void;
@@ -23,6 +24,8 @@ function log(message: string, err: unknown): void {
   process.stderr.write(`[somecode] ${message}: ${err instanceof Error ? err.message : String(err)}\n`);
 }
 
+const shuttingDown = (): SomeCodeError => new SomeCodeError('disconnected', 'SomeCode is shutting down');
+
 function isDirectory(path: string): boolean {
   try {
     return statSync(path).isDirectory();
@@ -36,6 +39,10 @@ export class SessionManager {
   readonly #store: Store;
   readonly #registry: AgentRegistry;
   readonly #entries = new Map<string, Entry>();
+  /** Aborted by closeAll(): stops agents that are still starting and refuses new sessions. */
+  readonly #shutdown = new AbortController();
+  /** createSession() agent starts in flight; closeAll() waits for them. */
+  readonly #starting = new Set<Promise<unknown>>();
 
   constructor(deps: { store: Store; registry: AgentRegistry }) {
     this.#store = deps.store;
@@ -43,6 +50,7 @@ export class SessionManager {
   }
 
   async createSession(projectId: string, agentId: string): Promise<SessionRow> {
+    if (this.#shutdown.signal.aborted) throw shuttingDown();
     const project = this.#store.getProject(projectId);
     if (!project) throw new SomeCodeError('not_found', `unknown project: ${projectId}`);
     const driver = this.#registry.get(agentId);
@@ -53,29 +61,44 @@ export class SessionManager {
     if (!(await driver.detect()).installed) {
       throw new SomeCodeError('agent_not_installed', `agent "${agentId}" is not installed`);
     }
+    if (this.#shutdown.signal.aborted) throw shuttingDown();
 
     // The row comes first so that every event the agent emits (even during startup) has a home.
     const row = this.#store.createSession({ projectId, agentId });
     const entry = this.#entry(row.id);
+    const starting = this.#startAgent(row.id, entry, driver, project.path);
+    this.#starting.add(starting);
     try {
-      entry.session = await AcpSession.start({
-        driver,
-        cwd: project.path,
-        onEvent: (event) => this.#onEvent(row.id, entry, event),
-      });
+      entry.session = await starting;
+    } finally {
+      this.#starting.delete(starting);
+    }
+    this.#store.setAcpSessionId(row.id, entry.session.acpSessionId);
+    return this.#store.getSession(row.id)!;
+  }
+
+  async #startAgent(sessionId: string, entry: Entry, driver: AgentDriver, cwd: string): Promise<AcpSession> {
+    const signal = this.#shutdown.signal;
+    let session: AcpSession;
+    try {
+      session = await AcpSession.start({ driver, cwd, signal, onEvent: (event) => this.#onEvent(sessionId, entry, event) });
     } catch (err) {
       // A failure before the agent ever ran (e.g. spawn error) emits no status of its own.
       if (!entry.disconnected) {
-        this.#onEvent(row.id, entry, {
+        this.#onEvent(sessionId, entry, {
           type: 'status',
           status: 'disconnected',
           reason: err instanceof Error ? err.message : String(err),
         });
       }
-      throw err;
+      throw signal.aborted ? shuttingDown() : err;
     }
-    this.#store.setAcpSessionId(row.id, entry.session.acpSessionId);
-    return this.#store.getSession(row.id)!;
+    if (signal.aborted) {
+      // closeAll() ran just as the start finished; this session is not in its list yet.
+      await session.close();
+      throw shuttingDown();
+    }
+    return session;
   }
 
   /** Starts a turn and returns immediately; progress and the outcome arrive as events. */
@@ -165,7 +188,10 @@ export class SessionManager {
     };
   }
 
+  /** Stops every agent, including ones still starting; later createSession() calls are refused. */
   async closeAll(): Promise<void> {
+    this.#shutdown.abort();
+    await Promise.allSettled([...this.#starting]);
     const entries = [...this.#entries.values()];
     await Promise.allSettled(entries.map((entry) => entry.session?.close()));
     for (const entry of entries) entry.listeners.clear();

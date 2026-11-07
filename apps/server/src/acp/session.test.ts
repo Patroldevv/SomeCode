@@ -243,6 +243,25 @@ describe('AcpSession', () => {
     expect(stderr).not.toHaveBeenCalled();
   });
 
+  it('(k) start(): aborting the signal mid-start stops the agent and rejects as disconnected', async () => {
+    const events: NormalizedEvent[] = [];
+    const controller = new AbortController();
+    const starting = AcpSession.start({
+      driver: fakeDriver('slow_start'),
+      cwd: process.cwd(),
+      onEvent: (e) => events.push(e),
+      signal: controller.signal,
+    });
+    setTimeout(() => controller.abort(), 200);
+    const t0 = Date.now();
+    await expect(starting).rejects.toMatchObject({ code: 'disconnected' });
+    expect(Date.now() - t0).toBeLessThan(3000);
+    expect(events).toEqual([{ type: 'status', status: 'disconnected', reason: 'closed' }]);
+
+    const aborted = AcpSession.start({ driver: fakeDriver('basic'), cwd: process.cwd(), onEvent: () => {}, signal: controller.signal });
+    await expect(aborted).rejects.toMatchObject({ code: 'disconnected' });
+  });
+
   it('(g) setConfig: sends session/set_config_option and emits the new config options', async () => {
     const { session, events } = await start('basic');
 

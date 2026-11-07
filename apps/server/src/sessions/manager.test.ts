@@ -1,3 +1,5 @@
+import { spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -428,6 +430,59 @@ describe('subscribe', () => {
     for (const bad of [-1, 1.5, Number.NaN]) {
       expect((await rejection(() => manager.subscribe(id, bad, () => {}))).code).toBe('bad_request');
     }
+  });
+});
+
+/** PIDs of processes whose command line contains `tag` (no shell, so pgrep never matches itself). */
+function pids(tag: string): string[] {
+  return spawnSync('pgrep', ['-f', tag], { encoding: 'utf8' }).stdout.split('\n').filter(Boolean);
+}
+
+describe('closeAll during startup', () => {
+  it('stops an agent that is still starting, rejects its createSession, and writes nothing afterwards', async () => {
+    const tag = `somecode-test-${randomUUID()}`;
+    const base = fakeDriver('slow_start');
+    const driver: AgentDriver = {
+      ...base,
+      launch: () => {
+        const l = base.launch();
+        return { ...l, args: [...l.args, tag] }; // marks this test's agent process
+      },
+    };
+    let closed = false;
+    const lateWrites: string[] = [];
+    const guarded: Store = {
+      ...store,
+      appendEvent: (sessionId, event) => {
+        if (closed) lateWrites.push(`appendEvent ${event.type}`);
+        return store.appendEvent(sessionId, event);
+      },
+      setAcpSessionId: (id, acpId) => {
+        if (closed) lateWrites.push('setAcpSessionId');
+        store.setAcpSessionId(id, acpId);
+      },
+    };
+    manager = new SessionManager({ store: guarded, registry: createRegistry([driver]) });
+
+    const creating = rejection(manager.createSession(projectId, 'fake'));
+    await vi.waitFor(() => expect(pids(tag)).toHaveLength(1)); // the agent runs, stuck in initialize
+    const t0 = Date.now();
+    await manager.closeAll();
+    closed = true;
+    expect(Date.now() - t0).toBeLessThan(3000); // did not wait for the 30 s initialize
+    expect(pids(tag)).toEqual([]);
+    expect((await creating).code).toBe('disconnected');
+
+    const [row] = store.listSessions(projectId);
+    expect(row!.acpSessionId).toBeNull();
+    expect(statuses(row!.id)).toEqual(['disconnected']);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(lateWrites).toEqual([]);
+
+    // After closeAll, new sessions are refused without spawning or writing anything.
+    expect((await rejection(manager.createSession(projectId, 'fake'))).code).toBe('disconnected');
+    expect(store.listSessions(projectId)).toHaveLength(1);
+    expect(pids(tag)).toEqual([]);
   });
 });
 

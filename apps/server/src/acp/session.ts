@@ -11,7 +11,13 @@ import { jsonLines, UnknownUpdates } from './stdio.ts';
 
 export type { StopReason };
 
-type StartOptions = { driver: AgentDriver; cwd: string; onEvent: (e: NormalizedEvent) => void };
+type StartOptions = {
+  driver: AgentDriver;
+  cwd: string;
+  onEvent: (e: NormalizedEvent) => void;
+  /** Aborting it while the agent is still starting stops the agent and rejects as `disconnected`. */
+  signal?: AbortSignal;
+};
 type State = 'starting' | 'ready' | 'running' | 'disconnected';
 
 /** JSON-RPC error codes from the agent that map to a specific SomeCode error. */
@@ -50,6 +56,7 @@ export class AcpSession {
   static async start(opts: StartOptions): Promise<AcpSession> {
     const launch = opts.driver.launch();
     if (!existsSync(opts.cwd)) throw new SomeCodeError('bad_request', `cwd does not exist: ${opts.cwd}`);
+    if (opts.signal?.aborted) throw new SomeCodeError('disconnected', 'agent start was aborted');
     const child = spawn(launch.command, launch.args, {
       cwd: opts.cwd,
       env: { ...process.env, ...launch.env },
@@ -57,7 +64,11 @@ export class AcpSession {
     });
     await spawned(child, launch.command);
     const session = new AcpSession(child, opts.driver.id, opts.onEvent);
+    // Aborting the start (server shutdown) stops the agent, so the handshake fails as disconnected.
+    const abort = () => session.#kill('closed');
+    opts.signal?.addEventListener('abort', abort, { once: true });
     try {
+      if (opts.signal?.aborted) abort();
       await session.#open(opts.cwd);
     } catch (err) {
       const error = session.#conn.signal.aborted
@@ -65,6 +76,8 @@ export class AcpSession {
         : toSomeCodeError(err, 'agent startup failed');
       await session.#shutdown(error.code === 'auth_required' ? 'auth_required' : 'startup_failed');
       throw error;
+    } finally {
+      opts.signal?.removeEventListener('abort', abort);
     }
     return session;
   }

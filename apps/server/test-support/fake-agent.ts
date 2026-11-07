@@ -1,7 +1,7 @@
 // Scripted ACP agent over stdio for tests. Behaviour is chosen by FAKE_SCENARIO:
 // basic | permission | crash | garbage | slow (see the brief of Task 5), plus
 // prompt_error | prompt_auth_error (session/prompt answered with a JSON-RPC error after a thought),
-// unknown_update (a `brand_new_thing` update between two messages).
+// unknown_update (a `brand_new_thing` update between two messages), slow_start (initialize hangs).
 import { Readable, Writable } from 'node:stream';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { agent, methods, ndJsonStream, PROTOCOL_VERSION, RequestError } from '@agentclientprotocol/sdk';
@@ -106,11 +106,10 @@ async function runTurn(client: AgentContext, signal: AbortSignal): Promise<StopR
 if (scenario === 'garbage') process.stdout.write('not json\n');
 
 const connection = agent({ name: 'fake' })
-  .onRequest(methods.agent.initialize, () => ({
-    protocolVersion: PROTOCOL_VERSION,
-    agentCapabilities: {},
-    authMethods: [],
-  }))
+  .onRequest(methods.agent.initialize, async () => {
+    if (scenario === 'slow_start') await sleep(30_000); // never finishes starting in a test
+    return { protocolVersion: PROTOCOL_VERSION, agentCapabilities: {}, authMethods: [] };
+  })
   .onRequest(methods.agent.session.new, () => ({
     sessionId: SESSION_ID,
     configOptions: configOptions(),
