@@ -9,9 +9,25 @@ const TEXT = 'whitespace-pre-wrap [overflow-wrap:anywhere] text-sm leading-relax
 /**
  * The agent's reasoning. Live: the text streams in, open, under a quiet "Thinking…" label. Done: one muted
  * "Thought for N s" line that toggles the text. Shown as plain text (never markdown).
+ *
+ * When done, the open state is controlled by `expanded`/`onToggle` in the list (it must survive the virtualized
+ * row being unmounted); without them it keeps its own state. While live it is always open and has no toggle, so
+ * it collapses when the thought ends unless the user opens it afterwards.
  */
-export function ThinkingBlock({ item, live }: { item: ThoughtItem; live: boolean }) {
-  const [open, setOpen] = useState(false);
+export function ThinkingBlock({
+  item,
+  live,
+  expanded,
+  onToggle,
+}: {
+  item: ThoughtItem;
+  live: boolean;
+  expanded?: boolean;
+  onToggle?: () => void;
+}) {
+  const [ownOpen, setOwnOpen] = useState(false);
+  const open = expanded ?? ownOpen;
+  const toggle = onToggle ?? (() => setOwnOpen((o) => !o));
   const id = useId();
 
   if (live) {
@@ -40,7 +56,7 @@ export function ThinkingBlock({ item, live }: { item: ThoughtItem; live: boolean
         type="button"
         aria-expanded={open}
         aria-controls={id}
-        onClick={() => setOpen((o) => !o)}
+        onClick={toggle}
         className="-mx-1.5 flex max-w-full items-center gap-1.5 rounded px-1.5 py-0.5 text-sm text-text-muted hover:bg-bg-subtle hover:text-text focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
       >
         <ChevronIcon className={`size-3 shrink-0 motion-safe:transition-transform ${open ? 'rotate-90' : ''}`} />

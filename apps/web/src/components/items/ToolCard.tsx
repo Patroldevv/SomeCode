@@ -24,9 +24,14 @@ function editStats(content: ToolItem['content']): { added: number; removed: numb
 /**
  * One compact, muted line per tool call — kind icon, title (truncated), `+n -m` for edits, status — that expands
  * to the raw input and the output. The status sits outside the button so its `role="status"` stays exposed.
+ *
+ * Controlled by `expanded`/`onToggle` in the list (the open state must survive the virtualized row being
+ * unmounted and remounted); without them it keeps its own state.
  */
-export function ToolCard({ item }: { item: ToolItem }) {
-  const [open, setOpen] = useState(false);
+export function ToolCard({ item, expanded, onToggle }: { item: ToolItem; expanded?: boolean; onToggle?: () => void }) {
+  const [ownOpen, setOwnOpen] = useState(false);
+  const open = expanded ?? ownOpen;
+  const toggle = onToggle ?? (() => setOwnOpen((o) => !o));
   const id = useId();
   const stats = editStats(item.content);
   const title = item.title.trim() || toolKindLabel(item.toolKind);
@@ -38,7 +43,7 @@ export function ToolCard({ item }: { item: ToolItem }) {
           type="button"
           aria-expanded={open}
           aria-controls={id}
-          onClick={() => setOpen((o) => !o)}
+          onClick={toggle}
           className="group -ml-1.5 flex min-w-0 flex-1 items-center gap-2 rounded px-1.5 py-0.5 text-left hover:bg-bg-subtle hover:text-text focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
         >
           <ToolKindIcon kind={item.toolKind} />

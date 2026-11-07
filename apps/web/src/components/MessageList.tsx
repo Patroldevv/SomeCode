@@ -69,6 +69,18 @@ export function MessageList({
   });
   const respond = useCallback((requestId: string, optionId: string) => respondRef.current(requestId, optionId), []);
 
+  // Opened tool cards / thoughts by item key. Held here, not in the rows: virtualization unmounts rows outside
+  // the window, and a row that comes back must not collapse under its cached (expanded) measured height. A new
+  // session remounts the list (`key`), which starts with nothing open.
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
+  const toggle = useCallback((key: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(key)) next.add(key);
+      return next;
+    });
+  }, []);
+
   const getItemKey = useCallback((index: number) => (items[index] as Item).key, [items]);
   const estimateSize = useCallback((index: number) => ESTIMATE[(items[index] as Item).kind], [items]);
 
@@ -138,7 +150,14 @@ export function MessageList({
                 }}
               >
                 <div className="mx-auto w-full max-w-3xl px-4 py-2">
-                  <ItemRow item={item} live={live} answered={answered} onRespond={respond} />
+                  <ItemRow
+                    item={item}
+                    live={live}
+                    answered={answered}
+                    onRespond={respond}
+                    expanded={(item.kind === 'tool' || item.kind === 'thought') && expanded.has(item.key)}
+                    onToggle={toggle}
+                  />
                 </div>
               </div>
             );

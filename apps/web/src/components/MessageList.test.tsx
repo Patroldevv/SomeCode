@@ -302,6 +302,100 @@ describe('MessageList', () => {
     expect(log).toHaveFocus();
   });
 
+  describe('expanded tool cards and thoughts survive virtualization', () => {
+    /** Gives the log a clamped, writable scrollTop (jsdom does not scroll) over `count` rows of ROW px. */
+    function scrollable(count: number) {
+      const log = screen.getByRole('log');
+      let top = 0;
+      const height = () => count * ROW + 40;
+      Object.defineProperty(log, 'scrollHeight', { configurable: true, get: height });
+      Object.defineProperty(log, 'scrollTop', {
+        configurable: true,
+        get: () => top,
+        set: (v: number) => (top = Math.max(0, Math.min(v, height() - VIEWPORT))),
+      });
+      return {
+        log,
+        scrollTo(v: number) {
+          top = v;
+          fireEvent.scroll(log);
+        },
+        setCount(n: number) {
+          count = n;
+        },
+      };
+    }
+    const many = (n: number) => Array.from({ length: n }, (_, i) => user(`u${i}`));
+    const toggleOf = (name: RegExp) => screen.getByRole('button', { name });
+
+    it('a tool card opened, scrolled out of the window (row unmounted) and back is still open', () => {
+      const head = [tool('t'), thought('th', 4000), user('1')];
+      const { rerender } = render(<List items={head} />);
+      fireEvent.click(toggleOf(/tool t/));
+      fireEvent.click(toggleOf(/^Thought/));
+      expect(toggleOf(/tool t/)).toHaveAttribute('aria-expanded', 'true');
+      expect(toggleOf(/^Thought/)).toHaveAttribute('aria-expanded', 'true');
+
+      const scroller = scrollable(head.length);
+      const long = [...head, ...many(100)];
+      scroller.setCount(long.length);
+      rerender(<List items={long} />); // pinned: follows the end
+      fireEvent.scroll(scroller.log);
+      expect(rowKeys()).not.toContain('t');
+      expect(rowKeys()).not.toContain('th');
+
+      scroller.scrollTo(0);
+      expect(rowKeys()).toContain('t');
+      expect(toggleOf(/tool t/)).toHaveAttribute('aria-expanded', 'true');
+      expect(toggleOf(/^Thought/)).toHaveAttribute('aria-expanded', 'true');
+      expect(screen.getByText('thinking th')).toBeVisible();
+
+      // Closing works the same way and also survives.
+      fireEvent.click(toggleOf(/tool t/));
+      scroller.scrollTo(100 * ROW);
+      expect(rowKeys()).not.toContain('t');
+      scroller.scrollTo(0);
+      expect(toggleOf(/tool t/)).toHaveAttribute('aria-expanded', 'false');
+    });
+
+    it('toggling one card re-renders that row only', () => {
+      const items = [tool('1'), agent('2'), tool('3'), thought('4', 3000)];
+      render(<List items={items} />);
+      const before = {
+        tool1: callsFor(ToolCard, '1'),
+        tool3: callsFor(ToolCard, '3'),
+        thought: callsFor(ThinkingBlock, '4'),
+        agent: agentCalls('agent 2'),
+      };
+      fireEvent.click(toggleOf(/tool 3/));
+      expect(toggleOf(/tool 3/)).toHaveAttribute('aria-expanded', 'true');
+      expect(callsFor(ToolCard, '3')).toBeGreaterThan(before.tool3);
+      expect(callsFor(ToolCard, '1')).toBe(before.tool1);
+      expect(callsFor(ThinkingBlock, '4')).toBe(before.thought);
+      expect(agentCalls('agent 2')).toBe(before.agent);
+    });
+
+    it('a live thought still folds when it ends (nothing stale), and opens only when the user asks', () => {
+      const { rerender } = render(<List items={[user('1'), thought('2')]} status="running" />);
+      expect(screen.getByText('Thinking…')).toBeInTheDocument();
+      rerender(<List items={[user('1'), thought('2', 4000)]} status="ready" />);
+      expect(toggleOf(/^Thought/)).toHaveAttribute('aria-expanded', 'false');
+      fireEvent.click(toggleOf(/^Thought/));
+      expect(toggleOf(/^Thought/)).toHaveAttribute('aria-expanded', 'true');
+    });
+
+    it('another session (a remounted list) starts with nothing open', () => {
+      const { rerender } = render(<List items={[tool('1')]} />);
+      fireEvent.click(toggleOf(/tool 1/));
+      rerender(
+        <div style={{ height: VIEWPORT }}>
+          <MessageList key="other" items={[tool('1')]} plan={null} status="ready" answeredRequests={noAnswers} onRespond={noop} />
+        </div>,
+      );
+      expect(toggleOf(/tool 1/)).toHaveAttribute('aria-expanded', 'false');
+    });
+  });
+
   it('hides the jump button while following the end', () => {
     render(<List items={[user('1'), agent('2')]} />);
     expect(screen.queryByRole('button', { name: /Jump to latest/ })).toBeNull();
