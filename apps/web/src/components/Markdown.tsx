@@ -24,14 +24,18 @@ const urlTransform: UrlTransform = (url) => (defaultUrlTransform(url) ? (safeHre
 const remarkPlugins = [remarkGfm];
 
 const components: Components = {
-  a: ({ href, title, children }) => {
+  // `id` / `aria-label` / `aria-describedby` carry GFM footnote anchors and their accessible labels.
+  a: ({ href, title, id, 'aria-label': ariaLabel, 'aria-describedby': describedBy, children }) => {
     const safe = href ? safeHref(href) : null;
-    if (safe === null) return <span>{children}</span>;
+    if (safe === null) return <span id={id}>{children}</span>;
     const web = /^https?:/i.test(safe);
     return (
       <a
         href={safe}
+        id={id}
         title={title}
+        aria-label={ariaLabel}
+        aria-describedby={describedBy}
         className="text-accent underline underline-offset-2"
         {...(web ? { target: '_blank', rel: 'noopener noreferrer' } : {})}
       >
@@ -54,7 +58,12 @@ const components: Components = {
   ),
   p: ({ children }) => <p className="my-2">{children}</p>,
   h1: ({ children }) => <h1 className="mt-5 mb-2 text-[1.5em] leading-tight font-semibold">{children}</h1>,
-  h2: ({ children }) => <h2 className="mt-5 mb-2 text-[1.3em] leading-tight font-semibold">{children}</h2>,
+  // GFM gives the footnotes heading `className="sr-only"` and an id: both must survive.
+  h2: ({ children, id, className }) => (
+    <h2 id={id} className={className ?? 'mt-5 mb-2 text-[1.3em] leading-tight font-semibold'}>
+      {children}
+    </h2>
+  ),
   h3: ({ children }) => <h3 className="mt-4 mb-2 text-[1.15em] leading-snug font-semibold">{children}</h3>,
   h4: ({ children }) => <h4 className="mt-4 mb-1 font-semibold">{children}</h4>,
   h5: ({ children }) => <h5 className="mt-3 mb-1 font-semibold">{children}</h5>,
@@ -67,7 +76,11 @@ const components: Components = {
       {children}
     </ol>
   ),
-  li: ({ children }) => <li className="my-0.5">{children}</li>,
+  li: ({ children, id }) => (
+    <li id={id} className="my-0.5">
+      {children}
+    </li>
+  ),
   blockquote: ({ children }) => (
     <blockquote className="my-3 border-l-2 border-border pl-3 text-text-muted">{children}</blockquote>
   ),

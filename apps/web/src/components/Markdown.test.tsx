@@ -2,6 +2,7 @@ import { act, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { HighlightedLine } from '../lib/highlight.ts';
 import { highlightTokens } from '../lib/highlight.ts';
+import { COST_FACTOR, LARGE_CODE, MIN_GAP_MS, STABLE_MS } from './CodeBlock.tsx';
 import { Markdown } from './Markdown.tsx';
 
 // Deterministic: no real Shiki in jsdom (lib/highlight.test.ts covers it in node).
@@ -187,13 +188,28 @@ describe('Markdown: GFM and code', () => {
     expect(pre).toHaveClass('overflow-x-auto', 'whitespace-pre', 'max-w-full');
   });
 
-  it('GFM footnotes and task lists render; footnote links stay in the page', () => {
+  it('GFM footnotes and task lists render; footnote links and back-references resolve in the page', () => {
     const { container } = render(<Markdown text={'note[^1]\n\n- [x] done\n\n[^1]: the footnote'} />);
-    const ref = container.querySelector('sup a')!;
-    expect(ref.getAttribute('href')).toMatch(/^#/);
+    const ref = container.querySelector<HTMLAnchorElement>('sup a')!;
+    const target = ref.getAttribute('href')!;
+    expect(target).toMatch(/^#./);
     expect(ref).not.toHaveAttribute('target');
+    const footnote = container.querySelector(`[id="${target.slice(1)}"]`);
+    expect(footnote?.tagName).toBe('LI');
+    expect(footnote?.textContent).toContain('the footnote');
+
+    // The back-reference points at the reference's own id.
+    expect(ref.id).not.toBe('');
+    const back = footnote!.querySelector('a')!;
+    expect(back.getAttribute('href')).toBe(`#${ref.id}`);
+
+    // GFM's English "Footnotes" heading stays screen-reader-only.
+    const heading = container.querySelector('section h2')!;
+    expect(heading).toHaveClass('sr-only');
+    expect(heading.id).not.toBe('');
+    expect(ref.getAttribute('aria-describedby')).toBe(heading.id);
+
     expect(container.querySelector('input[type="checkbox"]')).toBeChecked();
-    expect(container.textContent).toContain('the footnote');
   });
 
   it('inline code is not a block', () => {
@@ -254,5 +270,117 @@ describe('CodeBlock highlighting', () => {
     await act(async () => {});
     expect(container.querySelector('pre')!.textContent).toBe('zzz');
     expect(container.querySelector('pre span[style]')).toBeNull();
+  });
+
+  it('never highlights an empty block (a half-typed fence label would load the wrong grammar)', () => {
+    render(<Markdown text={'```java'} />);
+    render(<Markdown text={'```javascript\n```'} />);
+    expect(highlight).not.toHaveBeenCalled();
+  });
+});
+
+describe('CodeBlock scheduling while streaming (fake timers)', () => {
+  const COST_MS = 500;
+
+  /** A mocked highlighter whose every run "takes" COST_MS of fake time; records starts, ends and concurrency. */
+  function costlyHighlight() {
+    const runs: { code: string; start: number; end: number }[] = [];
+    let active = 0;
+    let maxActive = 0;
+    highlight.mockImplementation(async (code) => {
+      active++;
+      maxActive = Math.max(maxActive, active);
+      const start = Date.now();
+      vi.advanceTimersByTime(COST_MS); // synchronous tokenising cost
+      runs.push({ code, start, end: Date.now() });
+      await Promise.resolve();
+      active--;
+      return red(code);
+    });
+    return { runs, maxActive: () => maxActive };
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const block = (code: string) => '```ts\n' + code;
+
+  it('waits max(MIN_GAP, COST_FACTOR × last cost) after each run, runs one at a time, and highlights the final text', async () => {
+    const h = costlyHighlight();
+    let code = 'let a = 0;';
+    const { container, rerender } = render(<Markdown text={block(code)} />);
+    // 60 chunks, one every 50 ms (3 s of streaming).
+    for (let i = 1; i <= 60; i++) {
+      code += `\nlet v${i} = ${i};`;
+      rerender(<Markdown text={block(code)} />);
+      await act(async () => {
+        vi.advanceTimersByTime(50);
+      });
+    }
+    const whileStreaming = h.runs.length;
+
+    // Stream stops: the trailing run highlights the final text.
+    await act(async () => {
+      vi.advanceTimersByTime(10_000);
+    });
+
+    expect(h.maxActive()).toBe(1);
+    const gap = Math.max(MIN_GAP_MS, COST_FACTOR * COST_MS);
+    for (let i = 1; i < h.runs.length; i++) {
+      expect(h.runs[i]!.start - h.runs[i - 1]!.end).toBeGreaterThanOrEqual(gap);
+    }
+    // Without the cost-based gap this would be ~one run per chunk.
+    expect(whileStreaming).toBeLessThanOrEqual(Math.ceil((60 * 50) / (COST_MS + gap)) + 1);
+    expect(h.runs.at(-1)!.code).toBe(code);
+
+    const pre = container.querySelector('pre')!;
+    expect(pre.textContent).toBe(code);
+    const highlightedText = [...pre.querySelectorAll('span[style]')].map((s) => s.textContent).join('\n');
+    expect(highlightedText).toBe(code); // no plain tail left
+  });
+
+  it('keeps the highlighted prefix with a plain tail between runs (no flicker back to plain)', async () => {
+    costlyHighlight();
+    const { container, rerender } = render(<Markdown text={block('const a = 1;')} />);
+    await act(async () => {});
+    rerender(<Markdown text={block('const a = 1;\nconst b = 2;')} />);
+    const pre = container.querySelector('pre')!;
+    expect(pre.textContent).toBe('const a = 1;\nconst b = 2;');
+    expect(pre.querySelector('span[style]')?.textContent).toBe('const a = 1;');
+  });
+
+  it('highlights a large block only once its text has been stable for STABLE_MS', async () => {
+    const h = costlyHighlight();
+    const line = 'x'.repeat(99) + '\n';
+    let code = line.repeat(Math.ceil(LARGE_CODE / line.length) + 1);
+    const { rerender } = render(<Markdown text={block(code)} />);
+    for (let i = 0; i < 20; i++) {
+      code += line;
+      rerender(<Markdown text={block(code)} />);
+      await act(async () => {
+        vi.advanceTimersByTime(STABLE_MS - 50);
+      });
+    }
+    expect(h.runs).toHaveLength(0);
+    await act(async () => {
+      vi.advanceTimersByTime(STABLE_MS);
+    });
+    expect(h.runs.map((r) => r.code)).toEqual([code.replace(/\n$/, '')]);
+  });
+
+  it('does not run a pending highlight after unmount', async () => {
+    const h = costlyHighlight();
+    const { rerender, unmount } = render(<Markdown text={block('a')} />);
+    await act(async () => {});
+    rerender(<Markdown text={block('a\nb')} />); // trailing run is waiting for its gap
+    unmount();
+    await act(async () => {
+      vi.advanceTimersByTime(10_000);
+    });
+    expect(h.runs).toHaveLength(1);
   });
 });
