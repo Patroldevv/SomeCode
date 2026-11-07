@@ -143,6 +143,27 @@ describe('prompt', () => {
     await waitForStatus(id, 'ready', 3);
   });
 
+  it('keeps turn_in_progress when a listener re-prompts on status:ready', async () => {
+    setup(fakeDriver('slow'));
+    const { id } = await manager.createSession(projectId, 'fake');
+    let reprompted = false;
+    manager.subscribe(id, store.lastSeq(id), (e) => {
+      if (e.event.type === 'status' && e.event.status === 'ready' && !reprompted) {
+        reprompted = true;
+        manager.prompt(id, 'second');
+      }
+    });
+    manager.prompt(id, 'first');
+    await waitForType(id, 'agent_thought');
+    await manager.cancel(id);
+    await waitForStatus(id, 'running', 2);
+    // Let the finished first turn's promise settle; it must not clear the second turn's busy flag.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect((await rejection(() => manager.prompt(id, 'third'))).code).toBe('turn_in_progress');
+    await manager.cancel(id);
+    await waitForStatus(id, 'ready', 3);
+  });
+
   it('rejects an unknown session with not_found', async () => {
     setup(fakeDriver('basic'));
     expect((await rejection(() => manager.prompt('nope', 'hi'))).code).toBe('not_found');
@@ -186,6 +207,8 @@ describe('cancel, respondPermission, setConfig', () => {
       'not_found',
     );
     expect((await rejection(() => manager.respondPermission('nope', 'r', null))).code).toBe('not_found');
+    await manager.closeAll();
+    expect((await rejection(() => manager.respondPermission(id, 'r', null))).code).toBe('disconnected');
   });
 
   it('forwards setConfig and validates the session', async () => {
@@ -219,6 +242,27 @@ describe('subscribe', () => {
     expect(got.map((e) => e.seq)).toEqual(got.map((_, i) => i + 1));
     expect(sub.lastSeq).toBe(2); // config_options + status:ready existed at subscribe time
     sub.unsubscribe();
+  });
+
+  it('keeps order for all subscribers when a listener triggers events synchronously', async () => {
+    setup(fakeDriver('permission'));
+    const { id } = await manager.createSession(projectId, 'fake');
+    const from = store.lastSeq(id);
+    const seen: number[] = [];
+    let reprompted = false;
+    manager.subscribe(id, from, (e) => {
+      if (e.event.type === 'permission_request') manager.respondPermission(id, e.event.requestId, 'allow');
+      if (e.event.type === 'status' && e.event.status === 'ready' && !reprompted) {
+        reprompted = true;
+        manager.prompt(id, 'again'); // emits status:running synchronously
+      }
+    });
+    manager.subscribe(id, from, (e) => seen.push(e.seq));
+    manager.prompt(id, 'first');
+    await waitForStatus(id, 'ready', 3);
+    expect(seen).toEqual(store.eventsSince(id, from).map((e) => e.seq));
+    expect(types(id)).toContain('permission_resolved');
+    expect(seen.length).toBeGreaterThan(10);
   });
 
   it('replays only events after afterSeq', async () => {

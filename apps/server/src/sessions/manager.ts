@@ -12,6 +12,11 @@ type Entry = {
   listeners: Set<Listener>;
   busy: boolean;
   disconnected: boolean;
+  /** Identifies the running turn so a finished turn cannot clear the flag of its successor. */
+  turn: symbol | null;
+  /** Stored events awaiting broadcast; `draining` is set while a broadcast loop is running. */
+  queue: StoredEvent[];
+  draining: boolean;
 };
 
 function log(message: string, err: unknown): void {
@@ -79,12 +84,14 @@ export class SessionManager {
     const session = entry.session;
     if (!session || entry.disconnected) throw new SomeCodeError('disconnected', 'agent is not connected');
     if (entry.busy) throw new SomeCodeError('turn_in_progress', 'a prompt turn is already running');
+    const turn = Symbol('turn');
+    entry.turn = turn;
     entry.busy = true;
     session
       .prompt(text)
       .catch((err: unknown) => log(`prompt failed for session ${sessionId}`, err))
       .finally(() => {
-        entry.busy = false;
+        if (entry.turn === turn) entry.busy = false;
       });
   }
 
@@ -93,8 +100,9 @@ export class SessionManager {
   }
 
   respondPermission(sessionId: string, requestId: string, optionId: string | null): void {
-    const session = this.#known(sessionId).session;
-    if (!session) throw new SomeCodeError('disconnected', 'agent is not connected');
+    const entry = this.#known(sessionId);
+    const session = entry.session;
+    if (!session || entry.disconnected) throw new SomeCodeError('disconnected', 'agent is not connected');
     if (!session.respondPermission(requestId, optionId)) {
       throw new SomeCodeError('not_found', `no pending permission request: ${requestId}`);
     }
@@ -164,7 +172,15 @@ export class SessionManager {
   #entry(sessionId: string): Entry {
     let entry = this.#entries.get(sessionId);
     if (!entry) {
-      entry = { session: null, listeners: new Set(), busy: false, disconnected: false };
+      entry = {
+        session: null,
+        listeners: new Set(),
+        busy: false,
+        disconnected: false,
+        turn: null,
+        queue: [],
+        draining: false,
+      };
       this.#entries.set(sessionId, entry);
     }
     return entry;
@@ -191,12 +207,24 @@ export class SessionManager {
       log(`cannot persist ${event.type} event for session ${sessionId}`, err);
       return;
     }
-    for (const listener of [...entry.listeners]) {
-      try {
-        listener(stored);
-      } catch (err) {
-        log(`listener for session ${sessionId} threw`, err);
+    // A listener may synchronously cause further events (prompt, respondPermission). Those are
+    // queued and drained by the outermost loop so every listener sees events in seq order.
+    entry.queue.push(stored);
+    if (entry.draining) return;
+    entry.draining = true;
+    try {
+      let next: StoredEvent | undefined;
+      while ((next = entry.queue.shift())) {
+        for (const listener of [...entry.listeners]) {
+          try {
+            listener(next);
+          } catch (err) {
+            log(`listener for session ${sessionId} threw`, err);
+          }
+        }
       }
+    } finally {
+      entry.draining = false;
     }
   }
 }
