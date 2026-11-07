@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@somecode/protocol": "*",
+    "@tanstack/react-virtual": "^3.14.26",
     "diff": "^9.0.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
