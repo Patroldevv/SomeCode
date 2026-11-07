@@ -5,9 +5,13 @@
   "type": "module",
   "dependencies": {
     "@agentclientprotocol/sdk": "^2.4.0",
-    "@somecode/protocol": "*"
+    "@hono/node-server": "^2.1.6",
+    "@somecode/protocol": "*",
+    "hono": "^4.13.17",
+    "ws": "^8.22.1"
   },
   "devDependencies": {
-    "@types/node": "^26.6.6"
+    "@types/node": "^26.6.6",
+    "@types/ws": "^8.18.2"
   }
 }
