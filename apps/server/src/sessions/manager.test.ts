@@ -108,6 +108,7 @@ describe('prompt', () => {
     expect(types(id)).toEqual([
       'config_options',
       'status',
+      'user_message',
       'status',
       'agent_thought',
       'agent_message',
@@ -119,6 +120,66 @@ describe('prompt', () => {
     expect(statuses(id)).toEqual(['ready', 'running', 'ready']);
     const seqs = store.eventsSince(id, 0).map((e) => e.seq);
     expect(seqs).toEqual(seqs.map((_, i) => i + 1));
+  });
+
+  it('prompt journals user_message before status:running', async () => {
+    setup(fakeDriver('basic'));
+    const { id } = await manager.createSession(projectId, 'fake');
+    manager.prompt(id, 'hello');
+    await waitForStatus(id, 'ready', 2);
+    const stored = store.eventsSince(id, 0);
+    const at = stored.findIndex((e) => e.event.type === 'status' && e.event.status === 'running');
+    expect(at).toBeGreaterThan(0);
+    expect(stored[at - 1]!.event).toEqual({ type: 'user_message', text: 'hello' });
+    expect(stored.map((e) => e.seq)).toEqual(stored.map((_, i) => i + 1));
+  });
+
+  it('rejected prompt journals nothing', async () => {
+    setup(fakeDriver('slow'));
+    const { id } = await manager.createSession(projectId, 'fake');
+    manager.prompt(id, 'one');
+    await waitForType(id, 'agent_thought');
+    const last = store.lastSeq(id);
+    expect((await rejection(() => manager.prompt(id, 'two'))).code).toBe('turn_in_progress');
+    expect(store.lastSeq(id)).toBe(last);
+    expect(types(id).filter((t) => t === 'user_message')).toHaveLength(1);
+    await manager.cancel(id);
+    await waitForStatus(id, 'ready', 2);
+
+    const unknown = store.createSession({ projectId, agentId: 'fake' });
+    expect((await rejection(() => manager.prompt(unknown.id, 'hi'))).code).toBe('disconnected');
+    expect(store.lastSeq(unknown.id)).toBe(0);
+    expect((await rejection(() => manager.prompt('nope', 'hi'))).code).toBe('not_found');
+  });
+
+  it('rejected prompt on a disconnected session journals nothing', async () => {
+    setup(fakeDriver('crash'));
+    const { id } = await manager.createSession(projectId, 'fake');
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      manager.prompt(id, 'boom');
+      await waitForStatus(id, 'disconnected');
+      await vi.waitFor(() => expect(stderr).toHaveBeenCalledWith(expect.stringContaining('prompt failed')));
+    } finally {
+      stderr.mockRestore();
+    }
+    const last = store.lastSeq(id);
+    expect((await rejection(() => manager.prompt(id, 'again'))).code).toBe('disconnected');
+    expect(store.lastSeq(id)).toBe(last);
+  });
+
+  it('subscribers see user_message in order', async () => {
+    setup(fakeDriver('basic'));
+    const { id } = await manager.createSession(projectId, 'fake');
+    const got: StoredEvent[] = [];
+    manager.subscribe(id, store.lastSeq(id), (e) => got.push(e));
+    manager.prompt(id, 'hello');
+    await waitForStatus(id, 'ready', 2);
+    expect(got.slice(0, 2).map((e) => e.event)).toEqual([
+      { type: 'user_message', text: 'hello' },
+      { type: 'status', status: 'running' },
+    ]);
+    expect(got.map((e) => e.seq)).toEqual(store.eventsSince(id, 2).map((e) => e.seq));
   });
 
   it('rejects a second prompt during a turn, then accepts one after cancel', async () => {

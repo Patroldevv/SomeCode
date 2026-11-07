@@ -87,6 +87,8 @@ export class SessionManager {
     const turn = Symbol('turn');
     entry.turn = turn;
     entry.busy = true;
+    // The turn is accepted: record the user's message first so it precedes status:running.
+    this.#onEvent(sessionId, entry, { type: 'user_message', text });
     session
       .prompt(text)
       .catch((err: unknown) => log(`prompt failed for session ${sessionId}`, err))
