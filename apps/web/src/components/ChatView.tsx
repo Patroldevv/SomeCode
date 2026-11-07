@@ -1,7 +1,8 @@
 import { useReducer, useRef, type ReactNode } from 'react';
 import type { ClientMessage } from '@somecode/protocol';
-import { t } from '../i18n/index.ts';
+import { t, type MessageParams } from '../i18n/index.ts';
 import type { ConnectionState } from '../lib/connection.ts';
+import { groupDigits, MAX_PROMPT_BYTES, promptBytes } from '../lib/format.ts';
 import { planAnswer } from '../lib/permissionAnswers.ts';
 import { useDraft, useSession, type SessionsStore } from '../lib/sessionsStore.ts';
 import { Composer } from './Composer.tsx';
@@ -62,7 +63,7 @@ export function ChatView({
   connection: ConnectionState;
   banner: string | null;
   onDismissBanner: () => void;
-  onError: (code: string) => void;
+  onError: (code: string, params?: MessageParams) => void;
   leading: ReactNode;
 }) {
   const state = useSession(store, sessionId);
@@ -74,6 +75,12 @@ export function ChatView({
   const answered = answeredRef.current.get(sessionId) ?? NONE;
 
   const onSend = (text: string) => {
+    if (promptBytes(text) > MAX_PROMPT_BYTES) {
+      // Over the socket's payload limit the server would drop the connection and the prompt with it: refuse
+      // up front and keep the draft (nothing sent, no optimistic item).
+      onError('prompt_too_long', { limit: groupDigits(MAX_PROMPT_BYTES) });
+      return;
+    }
     if (send({ type: 'prompt', sessionId, text })) {
       // Shown at once; the server journals the prompt as a user_message, which confirms this item.
       store.addLocalUser(sessionId, text);

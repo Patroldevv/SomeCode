@@ -121,6 +121,9 @@ function toToolContent(raw: unknown[]): ToolContentView[] {
 
 const isString = (v: unknown): v is string => typeof v === 'string';
 
+/** What the server's store appends to a text it cut to its size limit (apps/server/src/store/store.ts). */
+export const TRUNCATION_MARKER = '…[truncated]';
+
 /** Pure: never mutates `state`; events at or below `lastSeq` (replay duplicates) are ignored. */
 export function applyEvent(state: SessionState, stored: StoredEvent): SessionState {
   if (stored.seq <= state.lastSeq) return state;
@@ -134,11 +137,21 @@ export function applyEvent(state: SessionState, stored: StoredEvent): SessionSta
   switch (e.type) {
     case 'user_message': {
       // A new prompt starts a new turn, so the previous turn's plan no longer applies.
-      const index = items.findLastIndex((i) => i.kind === 'user' && i.local === true && i.text === e.text);
+      const exact = items.findLastIndex((i) => i.kind === 'user' && i.local === true && i.text === e.text);
+      // The server cuts a prompt over 64 KiB and appends its marker: the oldest pending prompt with that
+      // prefix is the one echoed. It keeps its full local text (what the user sent; the agent got all of it).
+      const prefix = e.text.endsWith(TRUNCATION_MARKER) ? e.text.slice(0, -TRUNCATION_MARKER.length) : null;
+      const index =
+        exact >= 0 || prefix === null
+          ? exact
+          : items.findIndex(
+              (i) => i.kind === 'user' && i.local === true && i.text.length > prefix.length && i.text.startsWith(prefix),
+            );
       if (index >= 0) {
         // The server echoed our optimistic prompt: confirm it (keeping its key) instead of showing it twice.
+        const local = items[index] as Item & { kind: 'user' };
         const next = items.slice();
-        next[index] = { kind: 'user', key: (items[index] as Item).key, text: e.text };
+        next[index] = { kind: 'user', key: local.key, text: local.text };
         return { ...current, items: next, plan: null };
       }
       return { ...current, items: [...items, { kind: 'user', key, text: e.text }], plan: null };

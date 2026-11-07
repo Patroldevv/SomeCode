@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatDuration, groupDigits, prettyValue, truncateOutput } from './format.ts';
+import { formatDuration, groupDigits, MAX_PROMPT_BYTES, prettyValue, promptBytes, truncateOutput } from './format.ts';
 
 describe('formatDuration', () => {
   it('rounds to whole seconds', () => {
@@ -53,5 +53,16 @@ describe('prettyValue', () => {
     cyclic['self'] = cyclic;
     expect(typeof prettyValue(cyclic)).toBe('string');
     expect(prettyValue(undefined)).toBe('undefined');
+  });
+});
+
+describe('promptBytes', () => {
+  it('counts UTF-8 bytes of the JSON-escaped text', () => {
+    expect(promptBytes('abc')).toBe(3);
+    expect(promptBytes('ğ')).toBe(2);
+    expect(promptBytes('😀')).toBe(4);
+    expect(promptBytes('a"b\\c\n')).toBe(9); // escapes travel as two bytes each
+    expect(promptBytes('\u0001')).toBe(6); // \u0001
+    expect(MAX_PROMPT_BYTES).toBeLessThan(1_048_576);
   });
 });

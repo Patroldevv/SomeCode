@@ -87,4 +87,5 @@ export const tr: Record<MessageKey, string> = {
   'error.forbidden': 'Bu istek reddedildi, bu yüzden SomeCode\'u yazdırılan bağlantıyla yeniden açın.',
   'error.internal': 'SomeCode içinde bir şeyler ters gitti, bu yüzden yeniden deneyin; sürerse terminal çıktısına bakın.',
   'error.network': 'SomeCode\'a ulaşılamadı, bu yüzden çalıştığından emin olup yeniden deneyin.',
+  'error.prompt_too_long': 'Bu mesaj {limit} bayttan uzun, bu yüzden kısaltın ya da birkaç mesaja bölün.',
 };

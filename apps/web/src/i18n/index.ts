@@ -34,7 +34,7 @@ export function t(key: MessageKey, params?: MessageParams): string {
 }
 
 /** One-sentence message for a server error code (the raw server message is never shown). */
-export function errorText(code: string): string {
+export function errorText(code: string, params?: MessageParams): string {
   const key = `error.${code}`;
-  return t(key in en ? (key as MessageKey) : 'error.internal');
+  return t(key in en ? (key as MessageKey) : 'error.internal', params);
 }

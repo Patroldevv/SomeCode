@@ -189,6 +189,35 @@ describe('Client', () => {
     expect(screen.queryByText('Lost message', { selector: 'p' })).not.toBeInTheDocument();
   });
 
+  it('a prompt over the size limit is refused with a banner and keeps the draft; one just under it sends', async () => {
+    sessionStorage.setItem('somecode.activeSession', 's1');
+    await renderClient();
+    socket().open();
+    const send = () => fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+
+    const over = 'a'.repeat(900_001);
+    fireEvent.change(box(), { target: { value: over } });
+    send();
+    expect(socket().ofType('prompt')).toEqual([]);
+    expect(box().value).toBe(over);
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'This message is longer than 900 000 bytes, so shorten it or split it into several messages.',
+    );
+    expect(document.querySelectorAll('[data-item-key]')).toHaveLength(0); // no optimistic item
+
+    // Multi-byte text counts in UTF-8 bytes: 450 001 × 'ğ' (2 bytes each) is over the limit too.
+    fireEvent.change(box(), { target: { value: 'ğ'.repeat(450_001) } });
+    send();
+    expect(socket().ofType('prompt')).toEqual([]);
+
+    const under = 'a'.repeat(900_000);
+    fireEvent.change(box(), { target: { value: under } });
+    send();
+    expect(socket().ofType('prompt')).toEqual([{ type: 'prompt', sessionId: 's1', text: under }]);
+    expect(box().value).toBe('');
+    expect(document.querySelectorAll('[data-item-key^="local-"]')).toHaveLength(1);
+  });
+
   it('a permission card sends exactly one response, even on a double click', async () => {
     sessionStorage.setItem('somecode.activeSession', 's1');
     await renderClient();

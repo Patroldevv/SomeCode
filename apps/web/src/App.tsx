@@ -7,7 +7,7 @@ import { Sidebar } from './components/Sidebar.tsx';
 import { useCatalog } from './hooks/useCatalog.ts';
 import { useConnection, type UseConnectionOptions } from './hooks/useConnection.ts';
 import { useSidebarOpen } from './hooks/useSidebarOpen.ts';
-import { errorText, t } from './i18n/index.ts';
+import { errorText, t, type MessageParams } from './i18n/index.ts';
 import { loadActiveSession, saveActiveSession } from './lib/activeSession.ts';
 import { createApi, type Api } from './lib/api.ts';
 import { createSessionsStore, type SessionsStore } from './lib/sessionsStore.ts';
@@ -46,7 +46,7 @@ export function Client({ token, api: injectedApi, createSocket, store: injectedS
   const [dialogOpen, setDialogOpen] = useState(false);
   const [sidebarOpen, toggleSidebar] = useSidebarOpen();
 
-  const showError = useCallback((code: string) => setBanner(errorText(code)), []);
+  const showError = useCallback((code: string, params?: MessageParams) => setBanner(errorText(code, params)), []);
   const { conn, state, activate } = useConnection({
     token,
     store,

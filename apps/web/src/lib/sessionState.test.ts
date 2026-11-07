@@ -284,6 +284,55 @@ describe('applyEvent', () => {
     expect(state.plan).toBeNull();
   });
 
+  describe('a prompt the server truncated (over 64 KiB) is confirmed, not shown twice', () => {
+    const MARK = '…[truncated]';
+    const long = 'ab'.repeat(35 * 1024); // 70 KiB
+    const echoed = long.slice(0, 64 * 1024) + MARK;
+
+    it('confirms the local item and keeps the full local text', () => {
+      let state = addLocalUserMessage(initialState(), long);
+      state = applyEvent(state, ev(1, { type: 'user_message', text: echoed }));
+      expect(state.items).toEqual([{ kind: 'user', key: 'local-1', text: long }]);
+    });
+
+    it('confirms the OLDEST matching local item', () => {
+      let state = addLocalUserMessage(initialState(), long);
+      state = addLocalUserMessage(state, `${long}!`);
+      state = applyEvent(state, ev(1, { type: 'user_message', text: echoed }));
+      expect(state.items).toEqual([
+        { kind: 'user', key: 'local-1', text: long },
+        { kind: 'user', key: 'local-2', text: `${long}!`, local: true },
+      ]);
+      state = applyEvent(state, ev(2, { type: 'user_message', text: echoed }));
+      expect(state.items).toEqual([
+        { kind: 'user', key: 'local-1', text: long },
+        { kind: 'user', key: 'local-2', text: `${long}!` },
+      ]);
+    });
+
+    it('a replay of the echo alone (no local item) shows the truncated text once', () => {
+      const state = run([ev(1, { type: 'user_message', text: echoed })]);
+      expect(state.items).toEqual([{ kind: 'user', key: '1', text: echoed }]);
+    });
+
+    it('a local item that does not start with the echoed prefix is not confirmed', () => {
+      let state = addLocalUserMessage(initialState(), `x${long}`);
+      state = applyEvent(state, ev(1, { type: 'user_message', text: echoed }));
+      expect(state.items).toHaveLength(2);
+      expect(state.items[0]).toMatchObject({ local: true });
+    });
+
+    it('an exact echo still wins over a prefix match', () => {
+      let state = addLocalUserMessage(initialState(), long);
+      state = addLocalUserMessage(state, echoed); // the user literally typed the marker
+      state = applyEvent(state, ev(1, { type: 'user_message', text: echoed }));
+      expect(state.items).toEqual([
+        { kind: 'user', key: 'local-1', text: long, local: true },
+        { kind: 'user', key: 'local-2', text: echoed },
+      ]);
+    });
+  });
+
   it('local optimistic item keeps its key when confirmed', () => {
     let state = addLocalUserMessage(initialState(), 'hi');
     state = addLocalUserMessage(state, 'again');

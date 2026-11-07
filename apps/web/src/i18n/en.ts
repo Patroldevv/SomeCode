@@ -85,6 +85,7 @@ export const en = {
   'error.forbidden': 'This request was refused, so open SomeCode again using its printed link.',
   'error.internal': 'Something went wrong inside SomeCode, so try again and check its terminal output if it keeps happening.',
   'error.network': 'SomeCode could not be reached, so check that it is still running and try again.',
+  'error.prompt_too_long': 'This message is longer than {limit} bytes, so shorten it or split it into several messages.',
 } as const;
 
 export type MessageKey = keyof typeof en;

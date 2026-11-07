@@ -30,3 +30,15 @@ export function prettyValue(value: unknown): string {
     return String(value);
   }
 }
+
+/**
+ * The largest prompt the client sends, in UTF-8 bytes of its JSON-escaped text. The server closes the socket on
+ * a WebSocket message over 1 MiB (`maxPayload`); this leaves room for the envelope, so an oversized prompt is
+ * refused with a message instead of being lost on a reconnect.
+ */
+export const MAX_PROMPT_BYTES = 900_000;
+
+/** UTF-8 byte length of `text` as it travels inside a JSON string (escapes included, quotes excluded). */
+export function promptBytes(text: string): number {
+  return new TextEncoder().encode(JSON.stringify(text)).length - 2;
+}
