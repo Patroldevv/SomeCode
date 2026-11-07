@@ -1,8 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import type { NormalizedEvent, StoredEvent } from '@somecode/protocol';
-import { addLocalUserMessage, applyEvent, initialState, type SessionState } from './sessionState.ts';
+import {
+  addLocalUserMessage,
+  applyEvent,
+  initialState,
+  type Item,
+  type SessionState,
+  type ThoughtItem,
+  type ToolContentView,
+  type ToolItem,
+} from './sessionState.ts';
 
-const ev = (seq: number, event: NormalizedEvent): StoredEvent => ({ seq, sessionId: 's1', ts: 0, event });
+const ev = (seq: number, event: NormalizedEvent, ts = 0): StoredEvent => ({ seq, sessionId: 's1', ts, event });
 const run = (events: StoredEvent[], from: SessionState = initialState()): SessionState =>
   events.reduce(applyEvent, from);
 
@@ -24,8 +33,8 @@ describe('applyEvent', () => {
       ev(4, { type: 'agent_message', text: 'Done' }),
     ]);
     expect(state.items.map((i) => i.kind)).toEqual(['agent', 'tool', 'agent']);
-    expect(state.items[0]).toEqual({ kind: 'agent', text: 'Hello' });
-    expect(state.items[2]).toEqual({ kind: 'agent', text: 'Done' });
+    expect(state.items[0]).toEqual({ kind: 'agent', key: '1', text: 'Hello' });
+    expect(state.items[2]).toEqual({ kind: 'agent', key: '4', text: 'Done' });
     expect(state.lastSeq).toBe(4);
   });
 
@@ -34,7 +43,7 @@ describe('applyEvent', () => {
       ev(1, { type: 'agent_thought', text: 'Let me ' }),
       ev(2, { type: 'agent_thought', text: 'think' }),
     ]);
-    expect(state.items).toEqual([{ kind: 'thought', text: 'Let me think' }]);
+    expect(state.items).toEqual([{ kind: 'thought', key: '1', text: 'Let me think', startedAt: 0 }]);
   });
 
   it('patches only the matching tool item on tool_call_update', () => {
@@ -52,7 +61,7 @@ describe('applyEvent', () => {
     const state = run([ev(1, { type: 'agent_message', text: 'a' }), ev(2, { type: 'agent_message', text: 'b' })]);
     const again = run([ev(2, { type: 'agent_message', text: 'b' }), ev(1, { type: 'agent_message', text: 'a' })], state);
     expect(again).toEqual(state);
-    expect(again.items).toEqual([{ kind: 'agent', text: 'ab' }]);
+    expect(again.items).toEqual([{ kind: 'agent', key: '1', text: 'ab' }]);
   });
 
   it('updates status from status events', () => {
@@ -92,7 +101,7 @@ describe('applyEvent', () => {
       ev(2, { type: 'turn_end', stopReason: 'end_turn' }),
       ev(3, { type: 'config_options', options: [] }),
     ]);
-    expect(state.items).toEqual([{ kind: 'unsupported', sessionUpdate: 'x' }]);
+    expect(state.items).toEqual([{ kind: 'unsupported', key: '1', sessionUpdate: 'x' }]);
     expect(state.lastSeq).toBe(3);
   });
 
@@ -101,7 +110,7 @@ describe('applyEvent', () => {
       ev(1, { type: 'turn_end', stopReason: 'end_turn' }),
       ev(2, { type: 'turn_end', stopReason: 'error', error: { code: 'auth_required', message: 'raw detail' } }),
     ]);
-    expect(state.items).toEqual([{ kind: 'error', code: 'auth_required' }]);
+    expect(state.items).toEqual([{ kind: 'error', key: '2', code: 'auth_required' }]);
     expect(state.lastSeq).toBe(2);
   });
 
@@ -119,19 +128,171 @@ describe('applyEvent', () => {
     state = run(journal, state);
     state = run(journal, state); // and a second identical replay changes nothing
     expect(state.items).toEqual([
-      { kind: 'agent', text: 'a' },
-      { kind: 'user', text: 'hi' },
+      { kind: 'agent', key: '2', text: 'a' },
+      { kind: 'user', key: 'local-1', text: 'hi' },
     ]);
     expect(state.lastSeq).toBe(4);
     // After a reload (fresh state) the replay rebuilds the same transcript.
-    expect(run(journal).items).toEqual(state.items);
+    // Same content; only the confirmed prompt's key differs (it keeps `local-1` live, `3` after a reload).
+    const reloaded = run(journal).items;
+    const withoutKey = (items: Item[]) => items.map(({ key: _key, ...rest }) => rest);
+    expect(withoutKey(reloaded)).toEqual(withoutKey(state.items));
+    expect(reloaded.map((i) => i.key)).toEqual(['2', '3']);
   });
 
   it('merges a server user_message echo into the optimistic local item', () => {
     let state = addLocalUserMessage(initialState(), 'hi');
     state = applyEvent(state, ev(1, { type: 'user_message', text: 'hi' }));
-    expect(state.items).toEqual([{ kind: 'user', text: 'hi' }]);
+    expect(state.items).toEqual([{ kind: 'user', key: 'local-1', text: 'hi' }]);
     state = applyEvent(state, ev(2, { type: 'user_message', text: 'other' }));
     expect(state.items).toHaveLength(2);
+  });
+
+  it("keys are the creating event's seq and stay stable when chunks append", () => {
+    const state = run([
+      ev(5, { type: 'agent_message', text: 'Hel' }),
+      ev(6, { type: 'agent_message', text: 'lo' }),
+    ]);
+    expect(state.items).toHaveLength(1);
+    expect(state.items[0]?.key).toBe('5');
+    expect(state.items[0]).toMatchObject({ text: 'Hello' });
+  });
+
+  it('replaying the same events twice yields identical items and keys', () => {
+    const events = [
+      ev(1, { type: 'user_message', text: 'hi' }),
+      ev(2, { type: 'agent_thought', text: 'hm' }, 100),
+      ev(3, { type: 'agent_message', text: 'a' }, 200),
+      ev(4, tool('t1')),
+      ev(5, { type: 'tool_call_update', id: 't1', patch: { status: 'completed' } }),
+      ev(6, { type: 'turn_end', stopReason: 'end_turn' }),
+    ];
+    expect(run(events).items).toEqual(run(events).items);
+    expect(run(events).items.map((i) => i.key)).toEqual(['1', '2', '3', '4']);
+  });
+
+  it('thought records startedAt from the first chunk and endedAt from the next non-thought event', () => {
+    let state = run([
+      ev(1, { type: 'agent_thought', text: 'a' }, 1000),
+      ev(2, { type: 'agent_thought', text: 'b' }, 2000),
+    ]);
+    expect(state.items[0]).toMatchObject({ kind: 'thought', text: 'ab', startedAt: 1000 });
+    expect((state.items[0] as ThoughtItem).endedAt).toBeUndefined();
+    // status:running does not close it.
+    state = applyEvent(state, ev(3, { type: 'status', status: 'running' }, 3000));
+    expect((state.items[0] as ThoughtItem).endedAt).toBeUndefined();
+    state = applyEvent(state, ev(4, { type: 'agent_message', text: 'x' }, 7000));
+    expect(state.items[0]).toMatchObject({ startedAt: 1000, endedAt: 7000 });
+    expect(state.items).toHaveLength(2);
+
+    const closers: NormalizedEvent[] = [
+      tool('t1'),
+      { type: 'turn_end', stopReason: 'end_turn' },
+      { type: 'status', status: 'disconnected' },
+    ];
+    for (const closer of closers) {
+      const s = run([ev(1, { type: 'agent_thought', text: 'a' }, 1000), ev(2, closer, 7000)]);
+      expect(s.items[0], closer.type).toMatchObject({ startedAt: 1000, endedAt: 7000 });
+    }
+  });
+
+  it('a thought arriving after turn_end starts a new item', () => {
+    const state = run([
+      ev(1, { type: 'agent_thought', text: 'a' }, 1000),
+      ev(2, { type: 'turn_end', stopReason: 'end_turn' }, 2000),
+      ev(3, { type: 'agent_thought', text: 'b' }, 3000),
+    ]);
+    expect(state.items).toHaveLength(2);
+    expect(state.items[0]).toMatchObject({ key: '1', text: 'a', startedAt: 1000, endedAt: 2000 });
+    expect(state.items[1]).toMatchObject({ key: '3', text: 'b', startedAt: 3000 });
+    expect((state.items[1] as ThoughtItem).endedAt).toBeUndefined();
+  });
+
+  it('tool_call_update for an unknown id is ignored', () => {
+    const before = run([ev(1, tool('t1'))]);
+    const after = applyEvent(before, ev(2, { type: 'tool_call_update', id: 'nope', patch: { status: 'completed' } }));
+    expect(after.items).toBe(before.items);
+    expect(after).toEqual({ ...before, lastSeq: 2 });
+  });
+
+  it('tool_call content is converted to typed views', () => {
+    const state = run([
+      ev(1, {
+        type: 'tool_call',
+        id: 't1',
+        title: 'Edit',
+        kind: 'edit',
+        status: 'pending',
+        content: [
+          { type: 'text', text: 'hello' },
+          { type: 'diff', path: 'a.ts', oldText: null, newText: 'new' },
+          { type: 'terminal', terminalId: 'term1' },
+        ],
+      }),
+      // A diff whose oldText is missing at runtime (undefined) becomes null.
+      ev(2, {
+        type: 'tool_call',
+        id: 't2',
+        title: 'Edit',
+        kind: 'edit',
+        status: 'pending',
+        content: [{ type: 'diff', path: 'b.ts', oldText: undefined, newText: 'n' } as never],
+      }),
+    ]);
+    const first = state.items[0] as ToolItem;
+    expect(first.content).toEqual([
+      { type: 'text', text: 'hello' },
+      { type: 'diff', path: 'a.ts', oldText: null, newText: 'new' },
+      { type: 'terminal', terminalId: 'term1' },
+    ] satisfies ToolContentView[]);
+    expect((state.items[1] as ToolItem).content).toEqual([{ type: 'diff', path: 'b.ts', oldText: null, newText: 'n' }]);
+  });
+
+  it('tool_call_update carries rawOutput and replaces content only when provided', () => {
+    const before = run([
+      ev(1, { ...(tool('t1') as Extract<NormalizedEvent, { type: 'tool_call' }>), content: [{ type: 'text', text: 'keep' }] }),
+    ]);
+    const noContent = applyEvent(
+      before,
+      ev(2, { type: 'tool_call_update', id: 't1', patch: { rawOutput: { code: 0 }, status: 'completed' } }),
+    );
+    expect(noContent.items[0]).toMatchObject({
+      rawOutput: { code: 0 },
+      status: 'completed',
+      content: [{ type: 'text', text: 'keep' }],
+    });
+    const withContent = applyEvent(
+      noContent,
+      ev(3, {
+        type: 'tool_call_update',
+        id: 't1',
+        patch: { content: [{ type: 'terminal', terminalId: 'x' }, { type: 'weird' }] },
+      }),
+    );
+    expect((withContent.items[0] as ToolItem).content).toEqual([{ type: 'terminal', terminalId: 'x' }]);
+    expect((withContent.items[0] as ToolItem).rawOutput).toEqual({ code: 0 });
+  });
+
+  it('plan replaces the previous plan and user_message clears it', () => {
+    const entries = (content: string) => [{ content, status: 'pending', priority: 'high' }];
+    let state = run([ev(1, { type: 'plan', entries: entries('one') })]);
+    expect(state.plan).toEqual(entries('one'));
+    expect(state.items).toEqual([]);
+    state = applyEvent(state, ev(2, { type: 'plan', entries: entries('two') }));
+    expect(state.plan).toEqual(entries('two'));
+    state = applyEvent(state, ev(3, { type: 'user_message', text: 'next' }));
+    expect(state.plan).toBeNull();
+  });
+
+  it('local optimistic item keeps its key when confirmed', () => {
+    let state = addLocalUserMessage(initialState(), 'hi');
+    state = addLocalUserMessage(state, 'again');
+    expect(state.items.map((i) => i.key)).toEqual(['local-1', 'local-2']);
+    expect(state.localSeq).toBe(2);
+    state = applyEvent(state, ev(9, { type: 'user_message', text: 'again' }));
+    expect(state.items[1]).toEqual({ kind: 'user', key: 'local-2', text: 'again' });
+    // An unrelated server message gets its own seq key.
+    state = applyEvent(state, ev(10, { type: 'user_message', text: 'other' }));
+    expect(state.items[2]?.key).toBe('10');
   });
 });
