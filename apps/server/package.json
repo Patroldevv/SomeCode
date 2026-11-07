@@ -6,5 +6,8 @@
   "dependencies": {
     "@agentclientprotocol/sdk": "^2.4.0",
     "@somecode/protocol": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6"
   }
 }
