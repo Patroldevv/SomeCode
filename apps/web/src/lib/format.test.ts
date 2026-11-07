@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatDuration, prettyValue, truncateOutput } from './format.ts';
+import { formatDuration, groupDigits, prettyValue, truncateOutput } from './format.ts';
 
 describe('formatDuration', () => {
   it('rounds to whole seconds', () => {
@@ -29,6 +29,15 @@ describe('truncateOutput', () => {
 
   it('honours a custom limit', () => {
     expect(truncateOutput('abcdef', 4)).toEqual({ text: 'abcd', hiddenChars: 2 });
+  });
+});
+
+describe('groupDigits', () => {
+  it('groups thousands with a no-break space (reads the same in English and Turkish)', () => {
+    expect(groupDigits(7)).toBe('7');
+    expect(groupDigits(999)).toBe('999');
+    expect(groupDigits(10_000)).toBe('10 000');
+    expect(groupDigits(1_234_567)).toBe('1 234 567');
   });
 });
 

@@ -15,6 +15,11 @@ export function truncateOutput(text: string, max = 20_000): { text: string; hidd
   return { text: text.slice(0, end), hiddenChars: text.length - end };
 }
 
+/** `10000` → `10 000` with a no-break space: the SI grouping, unambiguous in both English and Turkish. */
+export function groupDigits(n: number): string {
+  return String(Math.trunc(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+}
+
 /** A tool's raw input/output for display: strings verbatim, anything else as indented JSON; never throws. */
 export function prettyValue(value: unknown): string {
   if (typeof value === 'string') return value;
