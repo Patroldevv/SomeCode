@@ -276,6 +276,32 @@ describe('MessageList', () => {
     expect(rowKeys()).toEqual(['1', '2', '3', '4', '5', '6']);
   });
 
+  it('a wheel up shows the jump button with the new-item count; clicking it follows again and keeps focus in the log', () => {
+    const items = [user('1'), agent('2')];
+    const { rerender } = render(<List items={items} />);
+    const log = screen.getByRole('log');
+    // jsdom does not scroll: give the log a writable, clamped scrollTop that starts at its end.
+    let top = 400;
+    Object.defineProperty(log, 'scrollHeight', { configurable: true, get: () => 1000 });
+    Object.defineProperty(log, 'scrollTop', {
+      configurable: true,
+      get: () => top,
+      set: (v: number) => (top = Math.max(0, Math.min(v, 1000 - VIEWPORT))),
+    });
+    fireEvent.wheel(log, { deltaY: -60 });
+    expect(screen.getByRole('button', { name: 'Jump to latest' })).toBeInTheDocument();
+
+    rerender(<List items={[...items, agent('3')]} />);
+    const button = screen.getByRole('button', { name: /Jump to latest/ });
+    expect(button).toHaveTextContent('1 new');
+
+    top = 100;
+    fireEvent.click(button);
+    expect(top).toBe(1000 - VIEWPORT);
+    expect(screen.queryByRole('button', { name: /Jump to latest/ })).toBeNull();
+    expect(log).toHaveFocus();
+  });
+
   it('hides the jump button while following the end', () => {
     render(<List items={[user('1'), agent('2')]} />);
     expect(screen.queryByRole('button', { name: /Jump to latest/ })).toBeNull();

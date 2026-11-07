@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useStickToBottom, type ScrollTarget } from './useStickToBottom.ts';
 
 /** A scroll container without layout: the browser's clamping of `scrollTop`, nothing else. */
-class FakeScroller implements ScrollTarget {
+class FakeScroller extends EventTarget implements ScrollTarget {
   clientHeight = 100;
   scrollHeight = 1000;
   writes = 0;
@@ -32,6 +32,25 @@ function setup(initial: Props = { itemCount: 3, tail: 'a', contentSize: 1000 }) 
   const ref = { current: el };
   const hook = renderHook((p: Props) => useStickToBottom({ scrollRef: ref, ...p }), { initialProps: initial });
   return { el, ...hook };
+}
+
+/** A user scroll gesture's first event, dispatched on the container (as the browser does, before any scroll). */
+function wheel(el: FakeScroller, deltaY: number) {
+  const e = new Event('wheel');
+  Object.assign(e, { deltaY });
+  act(() => {
+    el.dispatchEvent(e);
+  });
+}
+function key(el: FakeScroller, k: string, init: { shiftKey?: boolean } = {}) {
+  act(() => {
+    el.dispatchEvent(Object.assign(new Event('keydown'), { key: k, shiftKey: init.shiftKey ?? false }));
+  });
+}
+function touch(el: FakeScroller, type: 'touchstart' | 'touchmove', clientY: number) {
+  act(() => {
+    el.dispatchEvent(Object.assign(new Event(type), { touches: [{ clientY }] }));
+  });
 }
 
 let consoleError: ReturnType<typeof vi.spyOn>;
@@ -145,5 +164,131 @@ describe('useStickToBottom', () => {
     el.userScrollTo(200);
     act(() => result.current.onScroll());
     expect(result.current.pinned).toBe(false);
+  });
+
+  describe('user intent (a smooth gesture must escape a streaming reply)', () => {
+    it('a wheel up unpins at once: the next chunk makes no scroll write', () => {
+      const { el, result, rerender } = setup();
+      act(() => result.current.onScroll());
+      const writes = el.writes;
+      wheel(el, -40);
+      expect(result.current.pinned).toBe(false);
+      // A chunk lands in the same frame, before the smooth scroll moved the view at all.
+      el.scrollHeight = 1050;
+      rerender({ itemCount: 3, tail: 'a2', contentSize: 1050 });
+      // The first frames of the animation: a few px up, still within the 80 px threshold.
+      el.userScrollTo(el.scrollTop - 20);
+      act(() => result.current.onScroll());
+      el.scrollHeight = 1100;
+      rerender({ itemCount: 4, tail: 'b', contentSize: 1100 });
+      expect(el.writes).toBe(writes);
+      expect(result.current.pinned).toBe(false);
+      expect(result.current.newItemCount).toBe(1);
+    });
+
+    it('a wheel down does not unpin', () => {
+      const { el, result, rerender } = setup();
+      act(() => result.current.onScroll());
+      wheel(el, 40);
+      expect(result.current.pinned).toBe(true);
+      el.scrollHeight = 1200;
+      rerender({ itemCount: 4, tail: 'b', contentSize: 1200 });
+      expect(el.atEnd).toBe(true);
+    });
+
+    it.each(['ArrowUp', 'PageUp', 'Home'])('%s unpins', (k) => {
+      const { el, result } = setup();
+      act(() => result.current.onScroll());
+      key(el, k);
+      expect(result.current.pinned).toBe(false);
+    });
+
+    it('Shift+Space unpins; other keys do not', () => {
+      const { el, result } = setup();
+      act(() => result.current.onScroll());
+      key(el, 'ArrowDown');
+      key(el, 'End');
+      key(el, ' ');
+      key(el, 'a');
+      expect(result.current.pinned).toBe(true);
+      key(el, ' ', { shiftKey: true });
+      expect(result.current.pinned).toBe(false);
+    });
+
+    it('a touch drag that scrolls content up unpins; one that scrolls down does not', () => {
+      const { el, result } = setup();
+      act(() => result.current.onScroll());
+      touch(el, 'touchstart', 300);
+      touch(el, 'touchmove', 290); // finger up: content scrolls down
+      expect(result.current.pinned).toBe(true);
+      touch(el, 'touchmove', 320); // finger down: content scrolls up
+      expect(result.current.pinned).toBe(false);
+    });
+
+    it('a pointerdown on the container itself (its scrollbar) unpins; one on a child does not', () => {
+      // A real element so the event bubbles from a child; layout metrics are faked on the instance.
+      const el = document.createElement('div');
+      const child = el.appendChild(document.createElement('p'));
+      let top = 0;
+      Object.defineProperties(el, {
+        clientHeight: { value: 100 },
+        scrollHeight: { value: 1000 },
+        scrollTop: { get: () => top, set: (v: number) => (top = Math.max(0, Math.min(v, 900))) },
+      });
+      const { result } = renderHook(() =>
+        useStickToBottom({ scrollRef: { current: el }, itemCount: 3, tail: 'a', contentSize: 1000 }),
+      );
+      act(() => result.current.onScroll());
+      act(() => {
+        child.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+      });
+      expect(result.current.pinned).toBe(true);
+      act(() => {
+        el.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+      });
+      expect(result.current.pinned).toBe(false);
+    });
+
+    it('does not unpin when there is nothing above to scroll to', () => {
+      const { el, result } = setup({ itemCount: 1, tail: 'a', contentSize: 50 });
+      el.scrollHeight = 50;
+      act(() => result.current.onScroll());
+      wheel(el, -40);
+      key(el, 'PageUp');
+      expect(result.current.pinned).toBe(true);
+    });
+
+    it('after unpinning by intent, scrolling back down to within 80 px of the bottom pins again', () => {
+      const { el, result, rerender } = setup();
+      act(() => result.current.onScroll());
+      wheel(el, -100);
+      el.userScrollTo(500);
+      act(() => result.current.onScroll());
+      el.scrollHeight = 1200;
+      rerender({ itemCount: 4, tail: 'b', contentSize: 1200 });
+      expect(result.current.newItemCount).toBe(1);
+      el.userScrollTo(1050); // 50 px from the end
+      act(() => result.current.onScroll());
+      expect(result.current.pinned).toBe(true);
+      expect(result.current.newItemCount).toBe(0);
+      el.scrollHeight = 1400;
+      rerender({ itemCount: 5, tail: 'c', contentSize: 1400 });
+      expect(el.atEnd).toBe(true);
+    });
+
+    it('unmount removes every listener it added', () => {
+      const el = new FakeScroller();
+      const add = vi.spyOn(el, 'addEventListener');
+      const remove = vi.spyOn(el, 'removeEventListener');
+      const { unmount } = renderHook(() =>
+        useStickToBottom({ scrollRef: { current: el }, itemCount: 1, tail: 'a', contentSize: 1000 }),
+      );
+      const added = add.mock.calls.map((c) => [c[0], c[1]]);
+      expect(added.map((c) => c[0]).sort()).toEqual(['keydown', 'pointerdown', 'touchmove', 'touchstart', 'wheel']);
+      for (const call of add.mock.calls) expect(call[2]).toEqual({ passive: true });
+      unmount();
+      expect(remove.mock.calls.map((c) => [c[0], c[1]])).toEqual(expect.arrayContaining(added));
+      expect(remove).toHaveBeenCalledTimes(added.length);
+    });
   });
 });

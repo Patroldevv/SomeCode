@@ -110,7 +110,7 @@ export function MessageList({
             ref={setPlanEl}
             data-sticky-plan=""
             style={{ position: 'sticky', top: 0 }}
-            className="z-10 border-b border-border bg-bg-elevated"
+            className="z-10 max-h-[40vh] overflow-y-auto border-b border-border bg-bg-elevated"
           >
             <div className="mx-auto w-full max-w-3xl px-4 py-3">
               <PlanChecklist plan={plan} />
@@ -148,7 +148,11 @@ export function MessageList({
       {!pinned && (
         <button
           type="button"
-          onClick={jumpToLatest}
+          onClick={() => {
+            jumpToLatest();
+            // The button unmounts once pinned: keep keyboard focus in the log rather than dropping it to <body>.
+            scrollRef.current?.focus({ preventScroll: true });
+          }}
           className="absolute bottom-4 left-1/2 z-20 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-border bg-bg-elevated px-3 py-1.5 font-ui text-sm text-text hover:bg-bg-subtle focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
         >
           <ChevronIcon className="size-3.5 rotate-90" />
