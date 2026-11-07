@@ -10,6 +10,7 @@ const MAX_RAW_BYTES = 256 * 1024;
 const MAX_DIFF_BYTES = 256 * 1024;
 // Last-resort caps when an event with many large parts is still over MAX_EVENT_BYTES.
 const FALLBACK_BYTES = 1024;
+const MAX_ARRAY_ITEMS = 100;
 const TRUNCATION_SUFFIX = '…[truncated]';
 
 export type Project = { id: string; name: string; path: string; createdAt: number };
@@ -87,17 +88,26 @@ function limitEvent(event: NormalizedEvent, limits: Limits): NormalizedEvent {
     case 'agent_thought':
       return { ...event, text: truncateText(event.text, limits.text) };
     case 'tool_call': {
-      const next = { ...event, content: capContent(event.content, limits) as typeof event.content };
+      const next = {
+        ...event,
+        title: truncateText(event.title, limits.text),
+        content: capContent(event.content, limits) as typeof event.content,
+      };
       if ('rawInput' in event) next.rawInput = capRaw(event.rawInput, limits.raw);
       return next;
     }
     case 'tool_call_update': {
       const patch = { ...event.patch };
+      if (typeof patch.title === 'string') patch.title = truncateText(patch.title, limits.text);
       if ('rawInput' in patch) patch.rawInput = capRaw(patch.rawInput, limits.raw);
       if ('rawOutput' in patch) patch.rawOutput = capRaw(patch.rawOutput, limits.raw);
       if ('content' in patch) patch.content = capContent(patch.content, limits);
       return { ...event, patch };
     }
+    case 'permission_request':
+      return { ...event, title: truncateText(event.title, limits.text) };
+    case 'plan':
+      return { ...event, entries: event.entries.map((e) => ({ ...e, content: truncateText(e.content, limits.text) })) };
     case 'unsupported':
       return { ...event, raw: capRaw(event.raw, limits.raw) };
     default:
@@ -105,12 +115,37 @@ function limitEvent(event: NormalizedEvent, limits: Limits): NormalizedEvent {
   }
 }
 
-/** Bounds an event's size; only rawInput/rawOutput/raw payloads and text/diff content are touched. */
+/** Last-but-one resort: every string leaf cut to FALLBACK_BYTES and every array to MAX_ARRAY_ITEMS. */
+function truncateDeep(value: unknown): unknown {
+  if (typeof value === 'string') return truncateText(value, FALLBACK_BYTES);
+  if (Array.isArray(value)) return value.slice(0, MAX_ARRAY_ITEMS).map(truncateDeep);
+  if (isRecord(value)) return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, truncateDeep(v)]));
+  return value;
+}
+
+const tooBig = (json: string): boolean => Buffer.byteLength(json, 'utf8') >= MAX_EVENT_BYTES;
+
+/**
+ * Bounds an event's serialized size below MAX_EVENT_BYTES. Normal caps first (message text,
+ * titles, plan entries, text/diff content, raw payloads); if still too big, the same at
+ * FALLBACK_BYTES; then every string leaf and array; and as a last resort the event is replaced
+ * by a small schema-valid `unsupported` marker recording the original size.
+ */
 function boundEvent(event: NormalizedEvent): { event: NormalizedEvent; json: string } {
   let bounded = limitEvent(event, NORMAL_LIMITS);
   let json = JSON.stringify(bounded);
-  if (Buffer.byteLength(json, 'utf8') >= MAX_EVENT_BYTES) {
+  if (tooBig(json)) {
     bounded = limitEvent(bounded, FALLBACK_LIMITS);
+    json = JSON.stringify(bounded);
+  }
+  if (tooBig(json)) {
+    // String and array cuts keep every field's type, so the event still matches its schema.
+    bounded = truncateDeep(bounded) as NormalizedEvent;
+    json = JSON.stringify(bounded);
+  }
+  if (tooBig(json)) {
+    const bytes = Buffer.byteLength(JSON.stringify(event), 'utf8');
+    bounded = { type: 'unsupported', sessionUpdate: event.type, raw: { truncated: true, bytes } };
     json = JSON.stringify(bounded);
   }
   return { event: bounded, json };

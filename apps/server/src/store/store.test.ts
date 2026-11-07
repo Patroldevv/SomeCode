@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { NormalizedEvent } from '@somecode/protocol';
+import { normalizedEventSchema, type NormalizedEvent } from '@somecode/protocol';
 import { MAX_EVENT_BYTES, openStore, type Store } from './store.ts';
 
 const msg = (text: string): NormalizedEvent => ({ type: 'agent_message', text });
@@ -123,6 +123,94 @@ describe('store', () => {
     if (t.event.type !== 'tool_call') throw new Error('wrong type');
     expect(t.event.rawInput).toMatchObject({ truncated: true });
     expect(t.event.content).toEqual([{ type: 'diff', path: '/a', oldText: null, newText: 'n' }]);
+  });
+
+  describe('MAX_EVENT_BYTES is a hard bound', () => {
+    const huge = 'h'.repeat(3 * 1024 * 1024);
+    const bytesOf = (e: NormalizedEvent) => Buffer.byteLength(JSON.stringify(e), 'utf8');
+    const oversized: [string, NormalizedEvent][] = [
+      ['tool_call title', { type: 'tool_call', id: 't', title: huge, kind: 'execute', status: 'pending', content: [] }],
+      [
+        'permission_request title',
+        {
+          type: 'permission_request',
+          requestId: 'r',
+          toolCallId: 't',
+          title: huge,
+          options: [{ id: 'allow', name: 'Allow', kind: 'allow_once' }],
+        },
+      ],
+      ['tool_call_update title', { type: 'tool_call_update', id: 't', patch: { title: huge } }],
+      ['plan entry', { type: 'plan', entries: [{ content: huge, status: 'pending', priority: 'high' }] }],
+      [
+        'config_options',
+        {
+          type: 'config_options',
+          options: [{ id: 'model', name: huge, type: 'select', currentValue: 'a', options: [{ value: 'a', name: huge }] }],
+        },
+      ],
+      [
+        'many-parts tool_call',
+        {
+          type: 'tool_call',
+          id: 't',
+          title: 'Read',
+          kind: 'read',
+          status: 'completed',
+          content: Array.from({ length: 3000 }, () => ({ type: 'text' as const, text: 'p'.repeat(1000) })),
+        },
+      ],
+      [
+        'deeply many-parts config_options',
+        {
+          type: 'config_options',
+          options: Array.from({ length: 120 }, () => Array.from({ length: 120 }, () => 'q'.repeat(1500))),
+        },
+      ],
+    ];
+
+    it('stores every oversized event below the bound, schema-valid, with gapless seq', () => {
+      const store = open(':memory:');
+      const p = store.addProject({ name: 'p', path: '/tmp/p' });
+      const s = store.createSession({ projectId: p.id, agentId: 'claude' });
+      for (const [name, event] of oversized) {
+        expect(bytesOf(event), name).toBeGreaterThanOrEqual(MAX_EVENT_BYTES);
+        const stored = store.appendEvent(s.id, event);
+        expect(bytesOf(stored.event), name).toBeLessThan(MAX_EVENT_BYTES);
+        expect(normalizedEventSchema.safeParse(stored.event).success, name).toBe(true);
+      }
+      const all = store.eventsSince(s.id, 0);
+      expect(all.map((e) => e.seq)).toEqual(oversized.map((_, i) => i + 1));
+      for (const e of all) {
+        expect(bytesOf(e.event)).toBeLessThan(MAX_EVENT_BYTES);
+        expect(normalizedEventSchema.safeParse(e.event).success).toBe(true);
+      }
+    });
+
+    it('keeps the event type and cuts long titles with the truncation marker', () => {
+      const store = open(':memory:');
+      const p = store.addProject({ name: 'p', path: '/tmp/p' });
+      const s = store.createSession({ projectId: p.id, agentId: 'claude' });
+      const stored = store.appendEvent(s.id, oversized[0]![1]).event;
+      if (stored.type !== 'tool_call') throw new Error('wrong type');
+      expect(stored.title.endsWith('…[truncated]')).toBe(true);
+      const plan = store.appendEvent(s.id, oversized[3]![1]).event;
+      if (plan.type !== 'plan') throw new Error('wrong type');
+      expect(plan.entries[0]!.content.endsWith('…[truncated]')).toBe(true);
+    });
+
+    it('replaces an event that cannot be cut below the bound with a small unsupported marker', () => {
+      const store = open(':memory:');
+      const p = store.addProject({ name: 'p', path: '/tmp/p' });
+      const s = store.createSession({ projectId: p.id, agentId: 'claude' });
+      const event = oversized.at(-1)![1];
+      const stored = store.appendEvent(s.id, event).event;
+      expect(stored).toEqual({
+        type: 'unsupported',
+        sessionUpdate: 'config_options',
+        raw: { truncated: true, bytes: bytesOf(event) },
+      });
+    });
   });
 
   it('leaves small events untouched', () => {
