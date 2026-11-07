@@ -7,6 +7,7 @@ import { SomeCodeError, type ErrorCode, type NormalizedEvent } from '@somecode/p
 import type { AgentDriver } from '../agents/types.ts';
 import { PermissionBroker } from '../permissions/broker.ts';
 import { normalizeConfigOptions, normalizePermission, normalizeUpdate } from './normalize.ts';
+import { jsonLines, UnknownUpdates } from './stdio.ts';
 
 export type { StopReason };
 
@@ -16,36 +17,6 @@ type State = 'starting' | 'ready' | 'running' | 'disconnected';
 /** JSON-RPC error codes from the agent that map to a specific SomeCode error. */
 const RPC_ERROR_CODES: Record<number, ErrorCode> = { [-32000]: 'auth_required', [-32602]: 'bad_request' };
 const KILL_GRACE_MS = 2000;
-
-/**
- * Passes only complete stdout lines that look like JSON objects to the ACP stream, so stray
- * agent output (banners, logs) never reaches the JSON-RPC layer. Dropped lines go to stderr.
- */
-function jsonLines(label: string): TransformStream<Uint8Array, Uint8Array> {
-  const decoder = new TextDecoder();
-  const encoder = new TextEncoder();
-  let buffer = '';
-  const emit = (line: string, out: TransformStreamDefaultController<Uint8Array>) => {
-    const trimmed = line.trim();
-    if (trimmed.startsWith('{')) out.enqueue(encoder.encode(`${trimmed}\n`));
-    else if (trimmed) {
-      process.stderr.write(`[somecode] ${label}: ignored non-JSON stdout line: ${trimmed.slice(0, 200)}\n`);
-    }
-  };
-  return new TransformStream({
-    transform(chunk, out) {
-      buffer += decoder.decode(chunk, { stream: true });
-      let nl: number;
-      while ((nl = buffer.indexOf('\n')) !== -1) {
-        emit(buffer.slice(0, nl), out);
-        buffer = buffer.slice(nl + 1);
-      }
-    },
-    flush(out) {
-      emit(buffer + decoder.decode(), out);
-    },
-  });
-}
 
 function toSomeCodeError(err: unknown, what: string): SomeCodeError {
   if (err instanceof SomeCodeError) return err;
@@ -111,12 +82,16 @@ export class AcpSession {
         resolve();
       });
     });
-    const input = (Readable.toWeb(child.stdout!) as ReadableStream<Uint8Array>).pipeThrough(jsonLines(label));
+    const unknownUpdates = new UnknownUpdates();
+    const input = (Readable.toWeb(child.stdout!) as ReadableStream<Uint8Array>).pipeThrough(
+      jsonLines(label, (line) => unknownUpdates.rewrite(line)),
+    );
     const output = Writable.toWeb(child.stdin!) as WritableStream<Uint8Array>;
     this.#conn = client({ name: 'somecode' })
       .onNotification(methods.client.session.update, ({ params }) => {
+        const intercepted = unknownUpdates.take(params);
         if (params.sessionId !== this.#sessionId) return;
-        const event = normalizeUpdate(params.update);
+        const event = intercepted ? { type: 'unsupported' as const, ...intercepted } : normalizeUpdate(params.update);
         if (event) this.#emit(event);
       })
       .onRequest(methods.client.session.requestPermission, async ({ params, signal }) => {

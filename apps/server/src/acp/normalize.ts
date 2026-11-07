@@ -55,7 +55,9 @@ function normalizeToolContent(items: ToolCallContent[] | null | undefined): Tool
 
 /**
  * Normalizes an ACP `session/update` payload. Returns `null` only for updates that are
- * deliberately ignored; unknown or unmodeled kinds surface as `unsupported`.
+ * deliberately ignored; kinds the SDK knows but we do not model surface as `unsupported`.
+ * (Tags the SDK itself does not know never get here: `UnknownUpdates` in `stdio.ts` turns them
+ * into `unsupported` before SDK validation.)
  */
 export function normalizeUpdate(update: SessionUpdate): NormalizedEvent | null {
   switch (update.sessionUpdate) {

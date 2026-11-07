@@ -251,6 +251,24 @@ describe('prompt', () => {
     expect(seqs).toEqual(seqs.map((_, i) => i + 1));
   });
 
+  it('journals an unknown ACP update type as unsupported, in order', async () => {
+    setup(fakeDriver('unknown_update'));
+    const { id } = await manager.createSession(projectId, 'fake');
+    const from = store.lastSeq(id);
+    manager.prompt(id, 'hello');
+    await waitForStatus(id, 'ready', 2);
+    expect(store.eventsSince(id, from).map((e) => e.event)).toEqual([
+      { type: 'user_message', text: 'hello' },
+      { type: 'status', status: 'running' },
+      { type: 'agent_thought', text: 'Thinking about it' },
+      { type: 'agent_message', text: 'before' },
+      { type: 'unsupported', sessionUpdate: 'brand_new_thing', raw: { sessionUpdate: 'brand_new_thing', detail: { answer: 42 } } },
+      { type: 'agent_message', text: 'after' },
+      { type: 'turn_end', stopReason: 'end_turn' },
+      { type: 'status', status: 'ready' },
+    ]);
+  });
+
   it('rejects an unknown session with not_found', async () => {
     setup(fakeDriver('basic'));
     expect((await rejection(() => manager.prompt('nope', 'hi'))).code).toBe('not_found');

@@ -218,6 +218,31 @@ describe('AcpSession', () => {
     ]);
   });
 
+  it('(j) unknown_update: an update type the SDK does not know is emitted as unsupported, in order, silently', async () => {
+    const stderr = vi.spyOn(process.stderr, 'write');
+    const consoleError = vi.spyOn(console, 'error');
+    const { session, events } = await start('unknown_update');
+    const mark = events.length;
+
+    await expect(session.prompt('hi')).resolves.toBe('end_turn');
+    expect(events.slice(mark)).toEqual([
+      { type: 'status', status: 'running' },
+      { type: 'agent_thought', text: 'Thinking about it' },
+      { type: 'agent_message', text: 'before' },
+      {
+        type: 'unsupported',
+        sessionUpdate: 'brand_new_thing',
+        raw: { sessionUpdate: 'brand_new_thing', detail: { answer: 42 } },
+      },
+      { type: 'agent_message', text: 'after' },
+      { type: 'turn_end', stopReason: 'end_turn' },
+      { type: 'status', status: 'ready' },
+    ]);
+    // The SDK never saw the unknown update, so it logged no "Invalid params" error.
+    expect(consoleError).not.toHaveBeenCalled();
+    expect(stderr).not.toHaveBeenCalled();
+  });
+
   it('(g) setConfig: sends session/set_config_option and emits the new config options', async () => {
     const { session, events } = await start('basic');
 
