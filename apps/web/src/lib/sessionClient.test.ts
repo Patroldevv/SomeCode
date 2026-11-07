@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createConnection, type SocketLike } from './connection.ts';
 import { bindSessionClient } from './sessionClient.ts';
-import { createSessionsStore } from './sessionsStore.ts';
+import { createSessionsStore, type Schedule } from './sessionsStore.ts';
 
 class FakeSocket implements SocketLike {
   readyState = 0;
@@ -34,7 +34,7 @@ const agentEvent = (sessionId: string, seq: number, text = 'x') => ({
   stored: { seq, sessionId, ts: 0, event: { type: 'agent_message', text } },
 });
 
-function setup(restoredId: string | null) {
+function setup(restoredId: string | null, schedule?: Schedule) {
   const sockets: FakeSocket[] = [];
   const conn = createConnection({
     url: 'ws://h/ws',
@@ -45,7 +45,7 @@ function setup(restoredId: string | null) {
       return s;
     },
   });
-  const store = createSessionsStore();
+  const store = createSessionsStore(schedule ? { schedule } : {});
   const onError = vi.fn();
   const onRestoreFailed = vi.fn();
   const restoring = { current: restoredId };
@@ -141,5 +141,37 @@ describe('bindSessionClient', () => {
     socket.receive({ type: 'error', code: 'internal', message: 'x' });
     expect(store.get('s1').items).toEqual([]);
     expect(onError).not.toHaveBeenCalled();
+  });
+
+  it('a 5 000-event replay notifies the store listeners once per frame, not once per event', () => {
+    let frame: (() => void) | null = null;
+    const schedule: Schedule = (callback) => {
+      frame = callback;
+      return () => {
+        frame = null;
+      };
+    };
+    const runFrame = () => {
+      const run = frame;
+      frame = null;
+      run?.();
+    };
+    const { socket, store } = setup('s1', schedule);
+    const listener = vi.fn();
+    store.subscribe(listener);
+    socket.open();
+    // A replay from seq 0: one long answer streamed chunk by chunk; ~100 WS messages arrive per frame.
+    const EVENTS = 5000;
+    for (let seq = 1; seq <= EVENTS; seq++) {
+      socket.receive(agentEvent('s1', seq, 'word '));
+      if (seq % 100 === 0) runFrame();
+    }
+    runFrame();
+    // Before the fix every event notified synchronously: 5 000 notifications (= 5 000 React commits).
+    expect(listener.mock.calls.length).toBeLessThanOrEqual(50);
+    expect(listener.mock.calls.length).toBeGreaterThan(0);
+    expect(store.get('s1').lastSeq).toBe(EVENTS);
+    expect(store.get('s1').items).toHaveLength(1);
+    expect((store.get('s1').items[0] as { text: string }).text).toHaveLength(EVENTS * 5);
   });
 });

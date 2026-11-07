@@ -1,6 +1,38 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { NormalizedEvent, StoredEvent } from '@somecode/protocol';
-import { createSessionsStore } from './sessionsStore.ts';
+import { createSessionsStore, type Schedule } from './sessionsStore.ts';
+
+/** A hand-driven frame scheduler: `frame()` runs what is pending, like the browser's next animation frame. */
+function manualFrames() {
+  let queue: (() => void)[] = [];
+  let scheduled = 0;
+  let cancelled = 0;
+  const schedule: Schedule = (callback) => {
+    scheduled += 1;
+    queue.push(callback);
+    return () => {
+      cancelled += 1;
+      queue = queue.filter((c) => c !== callback);
+    };
+  };
+  return {
+    schedule,
+    frame: () => {
+      const run = queue;
+      queue = [];
+      for (const callback of run) callback();
+    },
+    get pending() {
+      return queue.length;
+    },
+    get scheduled() {
+      return scheduled;
+    },
+    get cancelled() {
+      return cancelled;
+    },
+  };
+}
 
 const ev = (seq: number, event: NormalizedEvent, sessionId = 's1'): StoredEvent => ({ seq, sessionId, ts: 0, event });
 const msg = (seq: number, text: string, sessionId = 's1'): StoredEvent =>
@@ -18,7 +50,8 @@ describe('createSessionsStore', () => {
   });
 
   it('get returns the same reference until that session changes', () => {
-    const store = createSessionsStore();
+    const frames = manualFrames();
+    const store = createSessionsStore({ schedule: frames.schedule });
     store.apply('a', msg(1, 'x', 'a'));
     store.apply('b', msg(1, 'y', 'b'));
     const a1 = store.get('a');
@@ -28,10 +61,14 @@ describe('createSessionsStore', () => {
     store.subscribe(listener);
     store.apply('b', msg(2, 'z', 'b'));
     expect(store.get('a')).toBe(a1);
+    frames.frame();
     expect(listener).toHaveBeenCalledTimes(1);
 
     store.apply('a', msg(1, 'dup', 'a'));
     expect(store.get('a')).toBe(a1);
+    // A duplicate seq changes nothing, so it does not even schedule a frame.
+    expect(frames.pending).toBe(0);
+    frames.frame();
     expect(listener).toHaveBeenCalledTimes(1);
 
     store.apply('a', msg(2, 'more', 'a'));
@@ -39,15 +76,19 @@ describe('createSessionsStore', () => {
   });
 
   it('subscribe is notified once per effective change and stops after unsubscribe', () => {
-    const store = createSessionsStore();
+    const frames = manualFrames();
+    const store = createSessionsStore({ schedule: frames.schedule });
     const listener = vi.fn();
     const unsubscribe = store.subscribe(listener);
 
     store.apply('a', msg(1, 'x', 'a'));
+    expect(listener).toHaveBeenCalledTimes(0); // deferred to the next frame
+    frames.frame();
     expect(listener).toHaveBeenCalledTimes(1);
     store.addLocalUser('a', 'hi');
-    expect(listener).toHaveBeenCalledTimes(2);
+    expect(listener).toHaveBeenCalledTimes(2); // a user action: synchronous
     store.reset('a');
+    frames.frame();
     expect(listener).toHaveBeenCalledTimes(3);
     store.setDraft('a', 'typing');
     expect(listener).toHaveBeenCalledTimes(4);
@@ -57,7 +98,117 @@ describe('createSessionsStore', () => {
     unsubscribe();
     store.apply('a', msg(1, 'y', 'a'));
     store.addLocalUser('a', 'again');
+    frames.frame();
     expect(listener).toHaveBeenCalledTimes(4);
+  });
+
+  it('N rapid applies notify once per frame, while get() is current immediately', () => {
+    const frames = manualFrames();
+    const store = createSessionsStore({ schedule: frames.schedule });
+    const listener = vi.fn();
+    store.subscribe(listener);
+    for (let seq = 1; seq <= 100; seq++) {
+      store.apply('a', msg(seq, `chunk ${seq} `, 'a'));
+      expect(store.get('a').lastSeq).toBe(seq);
+    }
+    expect(listener).not.toHaveBeenCalled();
+    expect(frames.scheduled).toBe(1);
+    frames.frame();
+    expect(listener).toHaveBeenCalledOnce();
+    frames.frame();
+    expect(listener).toHaveBeenCalledOnce();
+    store.apply('a', msg(101, 'more', 'a'));
+    frames.frame();
+    expect(listener).toHaveBeenCalledTimes(2);
+  });
+
+  it('flush() delivers a pending notification now and cancels its frame', () => {
+    const frames = manualFrames();
+    const store = createSessionsStore({ schedule: frames.schedule });
+    const listener = vi.fn();
+    store.subscribe(listener);
+    store.flush();
+    expect(listener).not.toHaveBeenCalled(); // nothing pending: no-op
+    store.apply('a', msg(1, 'x', 'a'));
+    store.apply('a', msg(2, 'y', 'a'));
+    store.flush();
+    expect(listener).toHaveBeenCalledOnce();
+    expect(frames.pending).toBe(0);
+    frames.frame();
+    expect(listener).toHaveBeenCalledOnce();
+  });
+
+  it('drafts and local user items notify synchronously and carry pending event changes with them', () => {
+    const frames = manualFrames();
+    const store = createSessionsStore({ schedule: frames.schedule });
+    const seen: string[] = [];
+    store.subscribe(() => seen.push(`${store.getDraft('a')}|${store.get('a').lastSeq}`));
+    store.apply('a', msg(1, 'x', 'a'));
+    store.setDraft('a', 't');
+    expect(seen).toEqual(['t|1']);
+    expect(frames.pending).toBe(0); // the synchronous notification delivered the event change too
+    store.setDraft('a', 'ty');
+    expect(seen).toEqual(['t|1', 'ty|1']);
+    store.addLocalUser('a', 'hello');
+    expect(seen).toHaveLength(3);
+    frames.frame();
+    expect(seen).toHaveLength(3);
+  });
+
+  it('the last unsubscribe cancels a pending frame; without listeners nothing is scheduled', () => {
+    const frames = manualFrames();
+    const store = createSessionsStore({ schedule: frames.schedule });
+    const one = vi.fn();
+    const two = vi.fn();
+    const offOne = store.subscribe(one);
+    const offTwo = store.subscribe(two);
+    store.apply('a', msg(1, 'x', 'a'));
+    expect(frames.pending).toBe(1);
+    offOne();
+    expect(frames.pending).toBe(1); // still someone to notify
+    offTwo();
+    expect(frames.pending).toBe(0);
+    expect(frames.cancelled).toBe(1);
+    store.apply('a', msg(2, 'y', 'a'));
+    expect(frames.scheduled).toBe(1);
+    frames.frame();
+    expect(one).not.toHaveBeenCalled();
+    expect(two).not.toHaveBeenCalled();
+    expect(store.get('a').lastSeq).toBe(2);
+  });
+
+  it('the default scheduler uses requestAnimationFrame, or a 16 ms timer without it', () => {
+    vi.useFakeTimers();
+    try {
+      // node: no requestAnimationFrame, so the fallback timer runs it.
+      const store = createSessionsStore();
+      const listener = vi.fn();
+      const off = store.subscribe(listener);
+      store.apply('a', msg(1, 'x', 'a'));
+      vi.advanceTimersByTime(15);
+      expect(listener).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1);
+      expect(listener).toHaveBeenCalledOnce();
+      off();
+
+      const raf = vi.fn((callback: FrameRequestCallback) => setTimeout(() => callback(0), 5) as unknown as number);
+      const caf = vi.fn((id: number) => clearTimeout(id));
+      vi.stubGlobal('requestAnimationFrame', raf);
+      vi.stubGlobal('cancelAnimationFrame', caf);
+      const rafStore = createSessionsStore();
+      const rafListener = vi.fn();
+      const offRaf = rafStore.subscribe(rafListener);
+      rafStore.apply('a', msg(1, 'x', 'a'));
+      expect(raf).toHaveBeenCalledOnce();
+      vi.advanceTimersByTime(5);
+      expect(rafListener).toHaveBeenCalledOnce();
+      rafStore.apply('a', msg(2, 'y', 'a'));
+      offRaf();
+      expect(caf).toHaveBeenCalledOnce();
+    } finally {
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    }
   });
 
   it('reset forgets one session only', () => {

@@ -10,7 +10,7 @@ import { useSidebarOpen } from './hooks/useSidebarOpen.ts';
 import { errorText, t } from './i18n/index.ts';
 import { loadActiveSession, saveActiveSession } from './lib/activeSession.ts';
 import { createApi, type Api } from './lib/api.ts';
-import { createSessionsStore } from './lib/sessionsStore.ts';
+import { createSessionsStore, type SessionsStore } from './lib/sessionsStore.ts';
 import { loadToken } from './lib/token.ts';
 
 export function App() {
@@ -30,14 +30,15 @@ const samePath = (a: string, b: string): boolean => (a.replace(/\/+$/, '') || '/
 
 export type ClientProps = {
   token: string;
-  /** Test seams: a fake REST client and a fake WebSocket. */
+  /** Test seams: a fake REST client, a fake WebSocket and a store with a hand-driven frame scheduler. */
   api?: Api;
   createSocket?: UseConnectionOptions['createSocket'];
+  store?: SessionsStore;
 };
 
-export function Client({ token, api: injectedApi, createSocket }: ClientProps) {
+export function Client({ token, api: injectedApi, createSocket, store: injectedStore }: ClientProps) {
   const [api] = useState(() => injectedApi ?? createApi(token));
-  const [store] = useState(createSessionsStore);
+  const [store] = useState(() => injectedStore ?? createSessionsStore());
   // The session this tab showed before a reload (F5) is restored and replayed from seq 0.
   const [restoredId] = useState(loadActiveSession);
   const [activeId, setActiveId] = useState<string | null>(restoredId);

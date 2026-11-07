@@ -6,6 +6,7 @@ import { en } from './i18n/en.ts';
 import { setLanguageForTests } from './i18n/index.ts';
 import type { Api, SessionInfo } from './lib/api.ts';
 import type { SocketLike } from './lib/connection.ts';
+import { createSessionsStore, type SessionsStore } from './lib/sessionsStore.ts';
 
 // Deterministic: no real Shiki in jsdom (Ruling K).
 vi.mock('./lib/highlight.ts', () => ({ highlightTokens: vi.fn(async () => null) }));
@@ -31,8 +32,10 @@ class FakeSocket implements SocketLike {
     this.readyState = 3;
     act(() => this.onclose?.({}));
   }
+  /** One WS message, then the frame it is rendered in (the store coalesces event notifications per frame). */
   receive(msg: unknown): void {
     act(() => this.onmessage?.({ data: JSON.stringify(msg) }));
+    act(() => store.flush());
   }
   ofType(type: string) {
     return this.sent.filter((m) => m.type === type);
@@ -83,6 +86,8 @@ function fakeApi(sessions: SessionInfo[] = [row('s1')]) {
 }
 
 let sockets: FakeSocket[];
+/** Frames never run on their own: `FakeSocket.receive` flushes explicitly. */
+let store: SessionsStore;
 const createSocket = () => {
   const s = new FakeSocket();
   sockets.push(s);
@@ -91,7 +96,7 @@ const createSocket = () => {
 const socket = () => sockets[sockets.length - 1]!;
 
 async function renderClient(api = fakeApi()) {
-  render(<Client token="t" api={api} createSocket={createSocket} />);
+  render(<Client token="t" api={api} createSocket={createSocket} store={store} />);
   // Let the catalog requests settle so the sidebar is filled.
   await screen.findByRole('region', { name: 'alpha' });
   return api;
@@ -106,6 +111,7 @@ const box = () => screen.getByRole('textbox', { name: 'Message' }) as HTMLTextAr
 beforeEach(() => {
   setLanguageForTests('en');
   sockets = [];
+  store = createSessionsStore({ schedule: () => () => {} });
   sessionStorage.clear();
   localStorage.clear();
 });

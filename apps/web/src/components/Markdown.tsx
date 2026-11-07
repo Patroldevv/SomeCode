@@ -1,5 +1,7 @@
+import { memo } from 'react';
 import ReactMarkdown, { defaultUrlTransform, type Components, type ExtraProps, type UrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { splitMarkdownBlocks } from '../lib/markdownBlocks.ts';
 import { safeHref } from '../lib/safeUrl.ts';
 import { CodeBlock } from './CodeBlock.tsx';
 
@@ -102,13 +104,31 @@ const components: Components = {
   ),
 };
 
-/** Agent markdown (GFM). Inherits font family and size from its parent. Safe to re-render on every chunk. */
+/**
+ * One top-level block, parsed on its own. Memoised on its text: while a message streams only the last block
+ * changes, so only it is re-parsed. Renders no wrapper, so all blocks are siblings in `Markdown`'s container
+ * (vertical margins collapse across blocks exactly as in a single parse).
+ */
+const MarkdownBlock = memo(function MarkdownBlock({ text }: { text: string }) {
+  return (
+    <ReactMarkdown remarkPlugins={remarkPlugins} components={components} urlTransform={urlTransform}>
+      {text}
+    </ReactMarkdown>
+  );
+});
+
+/**
+ * Agent markdown (GFM). Inherits font family and size from its parent. Safe to re-render on every chunk:
+ * the text is split into blocks (`splitMarkdownBlocks`) keyed by index, and unchanged blocks are not re-parsed.
+ */
 export function Markdown({ text }: { text: string }) {
+  const blocks = splitMarkdownBlocks(text);
   return (
     <div className="min-w-0 [overflow-wrap:anywhere] [&>:first-child]:mt-0 [&>:last-child]:mb-0">
-      <ReactMarkdown remarkPlugins={remarkPlugins} components={components} urlTransform={urlTransform}>
-        {text}
-      </ReactMarkdown>
+      {blocks.map((block, index) => (
+        // Index keys are right here: blocks only ever grow at the end (prefix-stable split).
+        <MarkdownBlock key={index} text={block} />
+      ))}
     </div>
   );
 }
