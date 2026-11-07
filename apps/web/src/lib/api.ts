@@ -2,7 +2,8 @@ import type { ErrorCode } from '@somecode/protocol';
 
 export type AgentInfo = { id: string; label: string; installed: boolean; version?: string };
 export type ProjectInfo = { id: string; name: string; path: string };
-export type SessionInfo = { id: string; projectId: string; agentId: string };
+/** A session row as the server stores it (`createdAt` in ms since the epoch). */
+export type SessionInfo = { id: string; projectId: string; agentId: string; createdAt: number; title: string | null };
 
 /** A failed request, reduced to a code the UI can map to a message. */
 export class ApiError extends Error {
@@ -47,7 +48,12 @@ export function createApi(token: string) {
     projects: () => call<ProjectInfo[]>('/api/projects'),
     addProject: (name: string, path: string) =>
       call<ProjectInfo>('/api/projects', { method: 'POST', body: { name, path } }),
+    /** The project's sessions, oldest first. */
+    projectSessions: (projectId: string) =>
+      call<SessionInfo[]>(`/api/projects/${encodeURIComponent(projectId)}/sessions`),
     createSession: (projectId: string, agentId: string) =>
       call<SessionInfo>('/api/sessions', { method: 'POST', body: { projectId, agentId } }),
   };
 }
+
+export type Api = ReturnType<typeof createApi>;

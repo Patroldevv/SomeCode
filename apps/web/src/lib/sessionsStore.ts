@@ -70,3 +70,8 @@ export function createSessionsStore(): SessionsStore {
 export function useSession(store: SessionsStore, sessionId: string | null): SessionState {
   return useSyncExternalStore(store.subscribe, () => (sessionId === null ? EMPTY_STATE : store.get(sessionId)));
 }
+
+/** Subscribes a component to one session's draft; `null` yields `''`. Strings compare by value, so it is stable. */
+export function useDraft(store: SessionsStore, sessionId: string | null): string {
+  return useSyncExternalStore(store.subscribe, () => (sessionId === null ? '' : store.getDraft(sessionId)));
+}

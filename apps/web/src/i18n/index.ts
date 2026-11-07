@@ -22,9 +22,14 @@ export function interpolate(message: string, params?: MessageParams): string {
   );
 }
 
+/** The UI language: `'tr'` when the browser language starts with `tr`, `'en'` otherwise. */
+export function currentLanguage(): 'tr' | 'en' {
+  return language().toLowerCase().startsWith('tr') ? 'tr' : 'en';
+}
+
 /** Turkish when the browser language starts with `tr`, English otherwise. */
 export function t(key: MessageKey, params?: MessageParams): string {
-  const table: Record<MessageKey, string> = language().toLowerCase().startsWith('tr') ? tr : en;
+  const table: Record<MessageKey, string> = currentLanguage() === 'tr' ? tr : en;
   return interpolate(table[key], params);
 }
 
