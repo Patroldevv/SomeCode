@@ -3,12 +3,29 @@ import { tr } from './tr.ts';
 
 export type { MessageKey };
 
-const language = (): string => globalThis.navigator?.language ?? 'en';
+export type MessageParams = Record<string, string | number>;
+
+let override: string | null = null;
+
+const language = (): string => override ?? globalThis.navigator?.language ?? 'en';
+
+/** Test hook: force the language (e.g. `'tr'`); `null` goes back to `navigator.language`. */
+export function setLanguageForTests(lang: string | null): void {
+  override = lang;
+}
+
+/** Replaces `{name}` placeholders with `params[name]`; unknown placeholders stay as written. */
+export function interpolate(message: string, params?: MessageParams): string {
+  if (!params) return message;
+  return message.replace(/\{(\w+)\}/g, (placeholder, name: string) =>
+    Object.hasOwn(params, name) ? String(params[name]) : placeholder,
+  );
+}
 
 /** Turkish when the browser language starts with `tr`, English otherwise. */
-export function t(key: MessageKey): string {
+export function t(key: MessageKey, params?: MessageParams): string {
   const table: Record<MessageKey, string> = language().toLowerCase().startsWith('tr') ? tr : en;
-  return table[key];
+  return interpolate(table[key], params);
 }
 
 /** One-sentence message for a server error code (the raw server message is never shown). */

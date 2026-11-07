@@ -1,1 +1,67 @@
 @import 'tailwindcss';
+
+/*
+ * Design tokens. `:root` is the dark theme (default); `[data-theme='light']` overrides it.
+ * One accent colour, no shadows, no gradients.
+ * Contrast (WCAG): --text on --bg 15.4:1 dark / 16.4:1 light; --text-muted on --bg 7.2:1 dark / 6.4:1 light.
+ */
+:root {
+  --bg: #141413;
+  --bg-elevated: #1c1c1a;
+  --bg-subtle: #252522;
+  --text: #ecebe6;
+  --text-muted: #a3a29b;
+  --border: #3a3935;
+  --accent: #e08a62;
+  --danger: #f2766f;
+  --success: #6fc58b;
+  --warning: #e3b24f;
+
+  --font-ui: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-voice: ui-serif, Georgia, 'Times New Roman', serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
+
+  color-scheme: dark;
+}
+
+[data-theme='light'] {
+  --bg: #faf9f6;
+  --bg-elevated: #ffffff;
+  --bg-subtle: #f0eee8;
+  --text: #1b1b19;
+  --text-muted: #5d5c56;
+  --border: #d8d5cc;
+  --accent: #a8481f;
+  --danger: #c0302a;
+  --success: #2a7646;
+  --warning: #8a5a00;
+
+  color-scheme: light;
+}
+
+/*
+ * Tailwind mapping: `bg-bg text-text border-border`, `bg-bg-elevated`, `bg-bg-subtle`, `text-text-muted`,
+ * `text-accent`, `text-danger`, `text-success`, `text-warning`, `font-ui`, `font-voice`, `font-mono`.
+ * `inline` keeps utilities pointing at the live var(--token), so the theme switch needs no rebuild.
+ */
+@theme inline {
+  --color-bg: var(--bg);
+  --color-bg-elevated: var(--bg-elevated);
+  --color-bg-subtle: var(--bg-subtle);
+  --color-text: var(--text);
+  --color-text-muted: var(--text-muted);
+  --color-border: var(--border);
+  --color-accent: var(--accent);
+  --color-danger: var(--danger);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --font-ui: var(--font-ui);
+  --font-voice: var(--font-voice);
+  --font-mono: var(--font-mono);
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-ui);
+}
