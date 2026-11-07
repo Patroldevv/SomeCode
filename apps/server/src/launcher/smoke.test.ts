@@ -72,6 +72,21 @@ describe('runSmoke', () => {
     expect(result.events.some((s) => s.event.type === 'status' && s.event.status === 'disconnected')).toBe(true);
   });
 
+  it('fails with the error code when the agent rejects the prompt', async () => {
+    const { url } = await start([fakeDriver('prompt_auth_error')]);
+    const result = await runSmoke({
+      url,
+      token: TOKEN,
+      agentId: 'fake',
+      projectDir: dir,
+      prompt: 'say hi',
+      timeoutMs: 20_000,
+    });
+    expect(result).toMatchObject({ ok: false, stopReason: 'error' });
+    expect(result.reason).toContain('auth_required');
+    expect(result.events.at(-1)!.event).toMatchObject({ type: 'turn_end', error: { code: 'auth_required' } });
+  });
+
   it('times out when the turn never ends', async () => {
     const { url } = await start([fakeDriver('slow')]);
     const result = await runSmoke({

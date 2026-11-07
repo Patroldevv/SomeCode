@@ -60,7 +60,8 @@ async function api<T>(base: string, token: string, path: string, body: unknown, 
 /**
  * Drives one scripted turn against a running server: creates a project and a session over REST,
  * subscribes over the WebSocket from seq 0, sends the prompt and resolves when the turn ends
- * (`ok: true`), the agent disconnects, the server reports an error, or the deadline passes.
+ * (`ok: true`, or `ok: false` with the error code when the agent failed the turn), the agent
+ * disconnects, the server reports an error, or the deadline passes.
  */
 export async function runSmoke(opts: SmokeOptions): Promise<SmokeResult> {
   const events: StoredEvent[] = [];
@@ -125,7 +126,9 @@ export async function runSmoke(opts: SmokeOptions): Promise<SmokeResult> {
           events.push(msg.stored);
           opts.onEvent?.(msg.stored);
           const e = msg.stored.event;
-          if (e.type === 'turn_end') finish({ ok: true, stopReason: e.stopReason });
+          if (e.type === 'turn_end' && e.error) {
+            finish({ ok: false, stopReason: e.stopReason, reason: `${e.error.code}: ${e.error.message}` });
+          } else if (e.type === 'turn_end') finish({ ok: true, stopReason: e.stopReason });
           else if (e.type === 'status' && e.status === 'disconnected') {
             finish({ ok: false, reason: e.reason ?? 'agent disconnected' });
           }

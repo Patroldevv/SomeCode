@@ -1,5 +1,6 @@
 // Scripted ACP agent over stdio for tests. Behaviour is chosen by FAKE_SCENARIO:
-// basic | permission | crash | garbage | slow (see the brief of Task 5).
+// basic | permission | crash | garbage | slow (see the brief of Task 5), plus
+// prompt_error | prompt_auth_error (session/prompt answered with a JSON-RPC error after a thought).
 import { Readable, Writable } from 'node:stream';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { agent, methods, ndJsonStream, PROTOCOL_VERSION, RequestError } from '@agentclientprotocol/sdk';
@@ -61,6 +62,10 @@ async function runTurn(client: AgentContext, signal: AbortSignal): Promise<StopR
     sessionUpdate: 'agent_thought_chunk',
     content: { type: 'text', text: 'Thinking about it' },
   });
+
+  // The turn fails: the agent answers session/prompt with a JSON-RPC error.
+  if (scenario === 'prompt_error') throw RequestError.internalError(undefined, 'model exploded');
+  if (scenario === 'prompt_auth_error') throw RequestError.authRequired(undefined, 'please log in');
 
   if (scenario === 'crash') {
     // Leave a permission request pending, then die mid-prompt.

@@ -237,6 +237,12 @@ function ItemView({ item, onRespond }: { item: Item; onRespond: (requestId: stri
       );
     case 'unsupported':
       return <Labeled label="item.unsupported">{item.sessionUpdate}</Labeled>;
+    case 'error':
+      return (
+        <div role="alert" className="rounded border border-red-400 p-2 text-red-900 dark:text-red-200">
+          <Labeled label="item.error">{errorText(item.code)}</Labeled>
+        </div>
+      );
     case 'permission':
       return (
         <div className="rounded border border-amber-400 p-2">

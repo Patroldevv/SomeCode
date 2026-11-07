@@ -27,6 +27,7 @@ export const tr: Record<MessageKey, string> = {
   'item.thought': 'Düşünüyor',
   'item.tool': 'Araç',
   'item.unsupported': 'Desteklenmeyen güncelleme',
+  'item.error': 'Ajan bu mesajı tamamlayamadı',
   'permission.heading': 'İzin isteniyor',
   'permission.reject': 'Reddet',
   'permission.resolved': 'Yanıtlandı',

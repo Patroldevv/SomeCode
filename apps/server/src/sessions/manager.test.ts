@@ -225,6 +225,32 @@ describe('prompt', () => {
     await waitForStatus(id, 'ready', 3);
   });
 
+  it('journals an agent error as turn_end{error} before status:ready, then accepts a new prompt', async () => {
+    setup(fakeDriver('prompt_auth_error'));
+    const { id } = await manager.createSession(projectId, 'fake');
+    const from = store.lastSeq(id);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      manager.prompt(id, 'hello');
+      await waitForStatus(id, 'ready', 2);
+      expect(store.eventsSince(id, from).map((e) => e.event)).toEqual([
+        { type: 'user_message', text: 'hello' },
+        { type: 'status', status: 'running' },
+        { type: 'agent_thought', text: 'Thinking about it' },
+        { type: 'turn_end', stopReason: 'error', error: { code: 'auth_required', message: expect.any(String) } },
+        { type: 'status', status: 'ready' },
+      ]);
+      // busy is cleared: a later prompt is accepted (and journaled) instead of turn_in_progress.
+      await vi.waitFor(() => expect(() => manager.prompt(id, 'again')).not.toThrow());
+      await waitForStatus(id, 'ready', 3);
+      expect(types(id).filter((t) => t === 'turn_end')).toHaveLength(2);
+    } finally {
+      stderr.mockRestore();
+    }
+    const seqs = store.eventsSince(id, 0).map((e) => e.seq);
+    expect(seqs).toEqual(seqs.map((_, i) => i + 1));
+  });
+
   it('rejects an unknown session with not_found', async () => {
     setup(fakeDriver('basic'));
     expect((await rejection(() => manager.prompt('nope', 'hi'))).code).toBe('not_found');

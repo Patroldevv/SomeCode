@@ -167,19 +167,31 @@ export class AcpSession {
     if (this.#state === 'running') throw new SomeCodeError('turn_in_progress', 'a prompt turn is already running');
     this.#state = 'running';
     this.#emit({ type: 'status', status: 'running' });
+    // The SDK dispatches updates through async handler chains but resolves responses directly
+    // and does not document their relative order; one macrotask guarantees that every update
+    // received before the response (or error) is emitted before `turn_end`.
+    const settle = () => new Promise((resolve) => setImmediate(resolve));
     try {
       const { stopReason } = await this.#conn.agent.request(methods.agent.session.prompt, {
         sessionId: this.#sessionId,
         prompt: [{ type: 'text', text }],
       });
-      // The SDK dispatches updates through async handler chains but resolves responses
-      // directly and does not document their relative order; one macrotask guarantees that
-      // every update received before the response is emitted before `turn_end`.
-      await new Promise((resolve) => setImmediate(resolve));
+      await settle();
       this.#emit({ type: 'turn_end', stopReason });
       return stopReason;
     } catch (err) {
-      throw this.#failure(err, 'prompt failed');
+      const failure = this.#failure(err, 'prompt failed');
+      // The agent answered the prompt with an error: make the outcome visible to every client.
+      // A lost connection is reported by status:disconnected instead.
+      await settle();
+      if (failure.code !== 'disconnected' && this.#isConnected()) {
+        this.#emit({
+          type: 'turn_end',
+          stopReason: 'error',
+          error: { code: failure.code, message: failure.message },
+        });
+      }
+      throw failure;
     } finally {
       if (this.#state === 'running' && !this.#conn.signal.aborted) {
         this.#state = 'ready';

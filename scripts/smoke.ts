@@ -5,7 +5,7 @@
 //     node scripts/smoke.ts <agentId> <projectDir> "<prompt text>"
 //
 // `--url` / `--token` flags override the environment. Exit code 0 when the turn ends, 1 on a
-// disconnect, an error or a timeout (SMOKE_TIMEOUT_MS, default 120000), 2 on a usage error.
+// failed turn (turn_end with an error), a disconnect, an error or a timeout (SMOKE_TIMEOUT_MS, default 120000), 2 on a usage error.
 import { parseArgs } from 'node:util';
 import type { StoredEvent } from '@somecode/protocol';
 import { DEFAULT_TIMEOUT_MS, runSmoke } from '../apps/server/src/launcher/smoke.ts';
@@ -35,6 +35,7 @@ function describe(stored: StoredEvent): string {
       break;
     case 'turn_end':
       detail = `stopReason=${e.stopReason}`;
+      if (e.error) detail += ` error=${e.error.code} ${oneLine(e.error.message, 300)}`;
       break;
     case 'status':
       detail = e.reason === undefined ? e.status : `${e.status} reason=${oneLine(e.reason, 300)}`;

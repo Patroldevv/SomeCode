@@ -13,6 +13,15 @@ describe('protocol', () => {
     expect(normalizedEventSchema.safeParse({ type: 'tool_call' }).success).toBe(false);
   });
 
+  it('accepts turn_end with and without an error outcome, but only known error codes', () => {
+    expect(normalizedEventSchema.safeParse({ type: 'turn_end', stopReason: 'end_turn' }).success).toBe(true);
+    const failed = { type: 'turn_end', stopReason: 'error', error: { code: 'auth_required', message: 'x' } };
+    expect(normalizedEventSchema.parse(failed)).toEqual(failed);
+    const unknownCode = { ...failed, error: { code: 'nope', message: 'x' } };
+    expect(normalizedEventSchema.safeParse(unknownCode).success).toBe(false);
+    expect(normalizedEventSchema.safeParse({ ...failed, error: { code: 'internal' } }).success).toBe(false);
+  });
+
   it('validates afterSeq as a non-negative integer', () => {
     const msg = (afterSeq: number) => ({ type: 'subscribe', sessionId: 's', afterSeq });
     expect(clientMessageSchema.safeParse(msg(-1)).success).toBe(false);

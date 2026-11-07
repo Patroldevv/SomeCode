@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { errorCodeSchema } from './errors.ts';
 
 export const toolContentSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('text'), text: z.string() }),
@@ -53,7 +54,15 @@ export const normalizedEventSchema = z.discriminatedUnion('type', [
     outcome: z.enum(['selected', 'cancelled']),
     optionId: z.string().optional(),
   }),
-  z.object({ type: z.literal('turn_end'), stopReason: z.string() }),
+  /**
+   * Every accepted turn that the agent answers ends with one `turn_end`. When the agent answers
+   * `session/prompt` with an error, `stopReason` is `'error'` and `error` carries its code.
+   */
+  z.object({
+    type: z.literal('turn_end'),
+    stopReason: z.string(),
+    error: z.object({ code: errorCodeSchema, message: z.string() }).optional(),
+  }),
   z.object({
     type: z.literal('status'),
     status: z.enum(['ready', 'running', 'disconnected']),

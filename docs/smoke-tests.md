@@ -33,7 +33,7 @@ Expected:
 - At least one `agent_message` and a `turn_end` appear.
 - After a page reload, the history is replayed identically.
 
-If `opencode` is not logged in, the expected outcome is a session that goes `disconnected` with an `auth_required` reason. That is not a defect of this plan; the login flow comes in a later plan.
+If `opencode` is not logged in, the expected outcome is either a session that goes `disconnected` with an `auth_required` reason (the agent refused to start), or a turn that ends with an error item showing the `auth_required` message (the agent refused the prompt). That is not a defect of this plan; the login flow comes in a later plan.
 
 ## 3. Scripted smoke test (no browser)
 
@@ -51,12 +51,12 @@ Exit codes:
 | Code | Meaning |
 | --- | --- |
 | 0 | `turn_end` arrived; the final line is `smoke: ok stopReason=<reason>` |
-| 1 | `status: disconnected` (the reason is printed), a server `error` message, a REST failure, or a timeout |
+| 1 | a `turn_end` with an error (its code is printed), `status: disconnected` (the reason is printed), a server `error` message, a REST failure, or a timeout |
 | 2 | usage error |
 
 Expected with a logged-in OpenCode: a `status ready`, a `user_message`, `status running`, one or more `agent_message` lines, then `turn_end` and exit 0.
 
-Expected with OpenCode not logged in: no `turn_end`; the run ends with `smoke: FAILED <reason>` where the reason mentions `auth_required`, and exit 1.
+Expected with OpenCode not logged in: either no `turn_end` (the session disconnects at startup) or a `turn_end stopReason=error error=auth_required …` line; in both cases the run ends with `smoke: FAILED <reason>` where the reason mentions `auth_required`, and exit 1.
 
 The logic lives in `apps/server/src/launcher/smoke.ts` (`runSmoke`) and is covered by `smoke.test.ts` against the fake agent.
 

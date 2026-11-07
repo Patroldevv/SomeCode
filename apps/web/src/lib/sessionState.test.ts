@@ -96,6 +96,15 @@ describe('applyEvent', () => {
     expect(state.lastSeq).toBe(3);
   });
 
+  it('turns a turn_end with an error into an error item, and a normal turn_end into nothing', () => {
+    const state = run([
+      ev(1, { type: 'turn_end', stopReason: 'end_turn' }),
+      ev(2, { type: 'turn_end', stopReason: 'error', error: { code: 'auth_required', message: 'raw detail' } }),
+    ]);
+    expect(state.items).toEqual([{ kind: 'error', code: 'auth_required' }]);
+    expect(state.lastSeq).toBe(2);
+  });
+
   it('merges a server user_message echo into the optimistic local item', () => {
     let state = addLocalUserMessage(initialState(), 'hi');
     state = applyEvent(state, ev(1, { type: 'user_message', text: 'hi' }));

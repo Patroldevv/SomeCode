@@ -408,6 +408,26 @@ describe('WebSocket sessions', () => {
     expect(client.ws.readyState).toBe(WebSocket.OPEN);
   });
 
+  it('(h) delivers an agent error at prompt time as turn_end{error}, then status:ready', async () => {
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      await start([fakeDriver('prompt_error')]);
+      const sessionId = await createSession();
+      const client = await connect();
+      await subscribeAll(client, sessionId);
+      client.send({ type: 'prompt', sessionId, text: 'hello' });
+      const turn = events(await client.until(isEvent('turn_end')));
+      expect(turn.at(-1)!.event).toEqual({
+        type: 'turn_end',
+        stopReason: 'error',
+        error: { code: 'internal', message: expect.any(String) },
+      });
+      expect(events([await client.next()])[0]!.event).toEqual({ type: 'status', status: 'ready' });
+    } finally {
+      stderr.mockRestore();
+    }
+  });
+
   it('subscribes one connection to several sessions', async () => {
     await start();
     const a = await createSession();

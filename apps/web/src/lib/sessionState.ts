@@ -1,4 +1,4 @@
-import type { StoredEvent } from '@somecode/protocol';
+import type { ErrorCode, StoredEvent } from '@somecode/protocol';
 
 export type SessionStatus = 'ready' | 'running' | 'disconnected';
 
@@ -26,7 +26,9 @@ export type Item =
       options: PermissionOption[];
       resolved: boolean;
     }
-  | { kind: 'unsupported'; sessionUpdate: string };
+  | { kind: 'unsupported'; sessionUpdate: string }
+  /** A turn the agent failed (`turn_end` with an error); rendered with the code's message. */
+  | { kind: 'error'; code: ErrorCode };
 
 export type SessionState = { lastSeq: number; items: Item[]; status: SessionStatus };
 
@@ -134,8 +136,9 @@ export function applyEvent(state: SessionState, stored: StoredEvent): SessionSta
       return { ...base, status: e.status };
     case 'unsupported':
       return { ...base, items: [...state.items, { kind: 'unsupported', sessionUpdate: e.sessionUpdate }] };
-    case 'plan':
     case 'turn_end':
+      return e.error ? { ...base, items: [...state.items, { kind: 'error', code: e.error.code }] } : base;
+    case 'plan':
     case 'config_options':
       return base;
   }

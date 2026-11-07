@@ -25,6 +25,7 @@ export const en = {
   'item.thought': 'Thinking',
   'item.tool': 'Tool',
   'item.unsupported': 'Unsupported update',
+  'item.error': 'The agent could not finish this message',
   'permission.heading': 'Permission requested',
   'permission.reject': 'Reject',
   'permission.resolved': 'Answered',

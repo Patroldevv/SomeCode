@@ -188,6 +188,36 @@ describe('AcpSession', () => {
     expect(events).toEqual([]);
   });
 
+  it('(h) prompt_error: an agent error ends the turn with an error turn_end, then ready', async () => {
+    const { session, events } = await start('prompt_error');
+    const mark = events.length;
+
+    await expect(session.prompt('hi')).rejects.toMatchObject({ code: 'internal' });
+    expect(events.slice(mark)).toEqual([
+      { type: 'status', status: 'running' },
+      { type: 'agent_thought', text: 'Thinking about it' },
+      {
+        type: 'turn_end',
+        stopReason: 'error',
+        error: { code: 'internal', message: expect.stringContaining('model exploded') },
+      },
+      { type: 'status', status: 'ready' },
+    ]);
+    // The session is usable again: the next prompt runs (and fails the same way), not turn_in_progress.
+    await expect(session.prompt('again')).rejects.toMatchObject({ code: 'internal' });
+    expect(events.filter((e) => e.type === 'turn_end')).toHaveLength(2);
+  });
+
+  it('(i) prompt_auth_error: JSON-RPC -32000 at prompt time becomes auth_required', async () => {
+    const { session, events } = await start('prompt_auth_error');
+
+    await expect(session.prompt('hi')).rejects.toMatchObject({ code: 'auth_required' });
+    expect(events.slice(-2)).toEqual([
+      { type: 'turn_end', stopReason: 'error', error: { code: 'auth_required', message: expect.any(String) } },
+      { type: 'status', status: 'ready' },
+    ]);
+  });
+
   it('(g) setConfig: sends session/set_config_option and emits the new config options', async () => {
     const { session, events } = await start('basic');
 
