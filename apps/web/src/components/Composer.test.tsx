@@ -191,4 +191,50 @@ describe('Composer', () => {
     rerender(<Composer value="" {...props} />);
     expect(box().style.height).toBe('24px');
   });
+
+  describe('double-send guard is self-healing', () => {
+    const base = { onChange: () => {}, running: false, disabled: false, onCancel: () => {} };
+
+    it('a throwing onSend does not block a later resend of the same text', () => {
+      const onSend = vi.fn(() => {
+        throw new Error('ws closed');
+      });
+      render(<Composer value="hi" {...base} onSend={onSend} />);
+      // React reports handler errors to window; silence the jsdom noise.
+      const swallow = (e: ErrorEvent) => e.preventDefault();
+      window.addEventListener('error', swallow);
+      fireEvent.keyDown(box(), { key: 'Enter' });
+      fireEvent.keyDown(box(), { key: 'Enter' });
+      fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+      window.removeEventListener('error', swallow);
+      expect(onSend).toHaveBeenCalledTimes(3);
+    });
+
+    it('running true -> false with an unchanged draft allows a resend', () => {
+      const onSend = vi.fn();
+      const { rerender } = render(<Composer value="hi" {...base} onSend={onSend} />);
+      fireEvent.keyDown(box(), { key: 'Enter' });
+      rerender(<Composer value="hi" {...base} running onSend={onSend} />);
+      rerender(<Composer value="hi" {...base} onSend={onSend} />);
+      fireEvent.keyDown(box(), { key: 'Enter' });
+      expect(onSend).toHaveBeenCalledTimes(2);
+    });
+
+    it('a parent that keeps the draft can resend after one tick (guard only covers the same tick)', async () => {
+      const onSend = vi.fn();
+      render(<Composer value="hi" {...base} onSend={onSend} />);
+      fireEvent.keyDown(box(), { key: 'Enter' });
+      await new Promise((r) => setTimeout(r, 0));
+      fireEvent.keyDown(box(), { key: 'Enter' });
+      expect(onSend).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it('moves focus to the textarea after Stop is clicked', async () => {
+    const onCancel = vi.fn();
+    render(<Host running onCancel={onCancel} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Stop' }));
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    expect(box()).toHaveFocus();
+  });
 });

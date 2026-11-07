@@ -26,13 +26,17 @@ const BASE_BUTTON =
 
 export function Composer({ value, onChange, running, disabled, onSend, onCancel }: ComposerProps) {
   const ref = useRef<HTMLTextAreaElement>(null);
-  /** Set on send, released when `value` changes: a second Enter before the parent clears the draft must not re-send. */
+  /**
+   * Suppresses same-tick duplicate sends (a second Enter before the parent has cleared the draft). Self-healing:
+   * released when `value`/`running`/`disabled` change, immediately if `onSend` throws, and on the next macrotask
+   * at the latest, so a parent that keeps the draft (failed send) never blocks a resend.
+   */
   const sentRef = useRef(false);
   const canSend = value.trim() !== '' && !running && !disabled;
 
   useEffect(() => {
     sentRef.current = false;
-  }, [value]);
+  }, [value, running, disabled]);
 
   useEffect(() => {
     if (!disabled) ref.current?.focus();
@@ -52,8 +56,21 @@ export function Composer({ value, onChange, running, disabled, onSend, onCancel 
   const send = () => {
     if (!canSend || sentRef.current) return;
     sentRef.current = true;
-    onSend(value.trim());
+    try {
+      onSend(value.trim());
+    } catch (err) {
+      sentRef.current = false;
+      throw err;
+    }
+    setTimeout(() => {
+      sentRef.current = false;
+    }, 0);
     ref.current?.focus();
+  };
+
+  const stop = () => {
+    onCancel();
+    ref.current?.focus(); // the Stop button unmounts; keep focus in the field
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -82,7 +99,7 @@ export function Composer({ value, onChange, running, disabled, onSend, onCancel 
           className="min-w-0 flex-1 resize-none bg-transparent py-1 text-sm leading-6 text-text outline-none placeholder:text-text-muted disabled:cursor-not-allowed disabled:opacity-60"
         />
         {running ? (
-          <button type="button" onClick={onCancel} className={`${BASE_BUTTON} border border-border text-text hover:bg-bg-subtle`}>
+          <button type="button" onClick={stop} className={`${BASE_BUTTON} border border-border text-text hover:bg-bg-subtle`}>
             {t('composer.stop')}
           </button>
         ) : (
