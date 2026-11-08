@@ -171,3 +171,18 @@ describe('NewSessionDialog', () => {
     expect(submit()).toBeDisabled();
   });
 });
+
+describe('NewSessionDialog sign-in warning', () => {
+  it('warns when the selected agent reports being signed out, without blocking', async () => {
+    const signedOut: AgentInfo[] = [{ id: 'agy', label: 'Antigravity', installed: true, auth: 'signed_out' }];
+    renderDialog({ agents: signedOut });
+    expect(screen.getByText(en['newSession.signedOut'])).toBeInTheDocument();
+    await userEvent.setup().type(path(), '/tmp');
+    expect(submit()).toBeEnabled();
+  });
+
+  it('shows no warning for signed-in or unknown agents', () => {
+    renderDialog();
+    expect(screen.queryByText(en['newSession.signedOut'])).not.toBeInTheDocument();
+  });
+});

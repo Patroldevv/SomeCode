@@ -435,3 +435,19 @@ describe('config chips', () => {
     expect(screen.queryByRole('group', { name: 'Session options' })).not.toBeInTheDocument();
   });
 });
+
+describe('sign-in hint', () => {
+  it('shows the agent\'s sign-in command under an auth_required failure', async () => {
+    const api = fakeApi();
+    api.agents.mockImplementation(async () => [
+      { id: 'claude', label: 'Claude Code', installed: true, auth: 'signed_out', signInHint: 'claude auth login' },
+    ]);
+    sessionStorage.setItem('somecode.activeSession', 's1');
+    await renderClient(api);
+    socket().open();
+    socket().receive({ type: 'subscribed', sessionId: 's1', lastSeq: 0 });
+    socket().receive(event(1, 's1', { type: 'turn_end', stopReason: 'error', error: { code: 'auth_required', message: 'x' } }));
+    const alert = await screen.findByRole('alert');
+    expect(within(alert).getByText('claude auth login')).toBeInTheDocument();
+  });
+});

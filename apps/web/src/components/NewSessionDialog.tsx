@@ -114,6 +114,11 @@ export function NewSessionDialog({
               ))}
             </select>
           </label>
+          {agents.find((a) => a.id === selected)?.auth === 'signed_out' && (
+            <p role="note" className="-mt-2 text-xs text-warning">
+              {t('newSession.signedOut')}
+            </p>
+          )}
           <div className="flex flex-col gap-1">
             <label className="flex flex-col gap-1 text-sm">
               {t('newSession.projectPath')}

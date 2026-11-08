@@ -50,12 +50,15 @@ export function MessageList({
   status,
   answeredRequests,
   onRespond,
+  signInHint,
 }: {
   items: Item[];
   plan: PlanEntry[] | null;
   status: SessionStatus;
   answeredRequests: ReadonlySet<string>;
   onRespond: (requestId: string, optionId: string) => void;
+  /** The session agent's sign-in command, shown under an `auth_required` failure. */
+  signInHint?: string;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [planEl, setPlanEl] = useState<HTMLDivElement | null>(null);
@@ -159,6 +162,7 @@ export function MessageList({
                     onRespond={respond}
                     expanded={(item.kind === 'tool' || item.kind === 'thought') && expanded.has(item.key)}
                     onToggle={toggle}
+                    {...(signInHint ? { signInHint } : {})}
                   />
                 </div>
               </div>

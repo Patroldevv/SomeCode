@@ -1,6 +1,16 @@
 import type { ErrorCode } from '@somecode/protocol';
 
-export type AgentInfo = { id: string; label: string; installed: boolean; version?: string };
+export type AgentInfo = {
+  id: string;
+  label: string;
+  installed: boolean;
+  version?: string;
+  /** `unknown` when the agent has no way to tell; a missing sign-in then shows up as an `auth_required` failure. */
+  auth?: 'signed_in' | 'signed_out' | 'unknown';
+  /** Fixed shell commands from the server, shown as text. */
+  signInHint?: string;
+  installHint?: string;
+};
 export type ProjectInfo = { id: string; name: string; path: string };
 /** A session row as the server stores it (`createdAt` in ms since the epoch). */
 export type SessionInfo = { id: string; projectId: string; agentId: string; createdAt: number; title: string | null };

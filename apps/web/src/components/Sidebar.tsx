@@ -1,6 +1,7 @@
 import { useId } from 'react';
 import { t } from '../i18n/index.ts';
 import type { AgentInfo, ProjectInfo, SessionInfo } from '../lib/api.ts';
+import { AgentList } from './AgentList.tsx';
 import type { ConnectionState } from '../lib/connection.ts';
 import { sessionLabel } from '../lib/sessionLabel.ts';
 import { useSession, type SessionsStore } from '../lib/sessionsStore.ts';
@@ -59,6 +60,7 @@ export function Sidebar({
           ))
         )}
       </div>
+      <AgentList agents={agents} />
       <div className="flex items-center gap-2 border-t border-border px-3 py-2 text-xs text-text-muted">
         <span aria-hidden="true" className={`inline-block size-1.5 rounded-full ${CONNECTION_DOT[connection]}`} />
         <span className="sr-only">{t('connection.label')}: </span>

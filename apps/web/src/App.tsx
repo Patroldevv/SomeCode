@@ -74,7 +74,9 @@ export function Client({ token, api: injectedApi, createSocket, store: injectedS
   };
 
   const row = groups.flatMap((g) => g.sessions).find((s) => s.id === activeId);
-  const agentLabel = row ? (agents.find((a) => a.id === row.agentId)?.label ?? row.agentId) : '';
+  const sessionAgent = row ? agents.find((a) => a.id === row.agentId) : undefined;
+  const agentLabel = row ? (sessionAgent?.label ?? row.agentId) : '';
+  const signInHint = sessionAgent?.signInHint;
   const toggle = (
     <button
       type="button"
@@ -115,6 +117,7 @@ export function Client({ token, api: injectedApi, createSocket, store: injectedS
             onDismissBanner={dismiss}
             onError={showError}
             leading={toggle}
+            {...(signInHint ? { signInHint } : {})}
           />
         ) : (
           <>

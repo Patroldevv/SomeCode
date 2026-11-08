@@ -366,3 +366,18 @@ describe('messages and rows', () => {
     expect(screen.getByText('usage_update')).toHaveClass('font-mono');
   });
 });
+
+describe('ErrorCard sign-in hint', () => {
+  it('shows the agent\'s sign-in command for auth_required', () => {
+    render(<ErrorCard code="auth_required" signInHint="claude auth login" />);
+    expect(screen.getByText('claude auth login')).toBeInTheDocument();
+    expect(screen.getByText(/Run this in a terminal/)).toBeInTheDocument();
+  });
+
+  it('shows no hint for other codes, or when the agent has none', () => {
+    const { rerender } = render(<ErrorCard code="disconnected" signInHint="claude auth login" />);
+    expect(screen.queryByText('claude auth login')).not.toBeInTheDocument();
+    rerender(<ErrorCard code="auth_required" />);
+    expect(screen.queryByText(/Run this in a terminal/)).not.toBeInTheDocument();
+  });
+});

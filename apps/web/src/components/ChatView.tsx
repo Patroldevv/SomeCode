@@ -57,6 +57,7 @@ export function ChatView({
   onDismissBanner,
   onError,
   leading,
+  signInHint,
 }: {
   sessionId: string;
   store: SessionsStore;
@@ -68,6 +69,8 @@ export function ChatView({
   onDismissBanner: () => void;
   onError: (code: string, params?: MessageParams) => void;
   leading: ReactNode;
+  /** The session agent's sign-in command (from the agent list). */
+  signInHint?: string;
 }) {
   const state = useSession(store, sessionId);
   const draft = useDraft(store, sessionId);
@@ -152,6 +155,7 @@ export function ChatView({
           status={state.status}
           answeredRequests={answered}
           onRespond={onRespond}
+          {...(signInHint ? { signInHint } : {})}
         />
       </div>
       <div className="mx-auto flex w-full max-w-3xl flex-col gap-2 px-4 pt-2 pb-3">

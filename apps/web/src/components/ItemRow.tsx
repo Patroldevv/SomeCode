@@ -20,6 +20,8 @@ export type ItemRowProps = {
   expanded: boolean;
   /** Toggles `expanded` for an item key. Must be referentially stable. */
   onToggle: (key: string) => void;
+  /** The agent's sign-in command; shown under an `auth_required` failure. */
+  signInHint?: string;
 };
 
 /**
@@ -27,7 +29,7 @@ export type ItemRowProps = {
  * reference and `live`/`answered` are booleans, so streaming into the last item re-renders that row only
  * (and e.g. `ToolCard`'s diff cache is not churned by every parent render).
  */
-export const ItemRow = memo(function ItemRow({ item, live, answered, onRespond, expanded, onToggle }: ItemRowProps) {
+export const ItemRow = memo(function ItemRow({ item, live, answered, onRespond, expanded, onToggle, signInHint }: ItemRowProps) {
   const toggle = () => onToggle(item.key);
   switch (item.kind) {
     case 'user':
@@ -41,7 +43,7 @@ export const ItemRow = memo(function ItemRow({ item, live, answered, onRespond, 
     case 'permission':
       return <PermissionCard item={item} answered={answered} onRespond={onRespond} />;
     case 'error':
-      return <ErrorCard code={item.code} />;
+      return <ErrorCard code={item.code} {...(signInHint ? { signInHint } : {})} />;
     case 'unsupported':
       return <UnsupportedRow sessionUpdate={item.sessionUpdate} />;
   }
