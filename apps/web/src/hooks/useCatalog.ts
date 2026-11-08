@@ -8,7 +8,7 @@ const codeOf = (err: unknown): string => (err instanceof ApiError ? err.code : '
 export function useCatalog(
   api: Api,
   onError: (code: string) => void,
-): { agents: AgentInfo[]; groups: ProjectGroup[]; reload: () => void } {
+): { agents: AgentInfo[]; groups: ProjectGroup[]; reload: () => void; reloadAgents: () => void } {
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [groups, setGroups] = useState<ProjectGroup[]>([]);
   const onErrorRef = useRef(onError);
@@ -33,22 +33,42 @@ export function useCatalog(
     })();
   }, [api]);
 
-  useEffect(() => {
-    let cancelled = false;
+  /** Re-reads install/sign-in state (e.g. after the user signed in elsewhere); one request at a time. */
+  const agentsInFlight = useRef(false);
+  const alive = useRef(true);
+  const reloadAgents = useCallback(() => {
+    if (agentsInFlight.current) return;
+    agentsInFlight.current = true;
     api
       .agents()
       .then((list) => {
-        if (!cancelled) setAgents(list);
+        if (alive.current) setAgents(list);
       })
       .catch((err: unknown) => {
-        if (!cancelled) onErrorRef.current(codeOf(err));
+        if (alive.current) onErrorRef.current(codeOf(err));
+      })
+      .finally(() => {
+        agentsInFlight.current = false;
       });
+  }, [api]);
+
+  useEffect(() => {
+    alive.current = true;
+    reloadAgents();
+    // The usual sign-in path: run the command in a terminal, come back to this window.
+    const refresh = () => {
+      if (document.visibilityState !== 'hidden') reloadAgents();
+    };
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', refresh);
     reload();
     return () => {
-      cancelled = true;
+      alive.current = false;
       generation.current++;
+      window.removeEventListener('focus', refresh);
+      document.removeEventListener('visibilitychange', refresh);
     };
-  }, [api, reload]);
+  }, [api, reload, reloadAgents]);
 
-  return { agents, groups, reload };
+  return { agents, groups, reload, reloadAgents };
 }

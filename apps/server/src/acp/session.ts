@@ -148,9 +148,15 @@ export class AcpSession {
       .onNotification(methods.client.session.update, ({ params }) => {
         const intercepted = unknownUpdates.take(params);
         if (params.sessionId !== this.#sessionId) return;
-        if (!intercepted && params.update.sessionUpdate === 'current_mode_update' && this.#modeFromModes) {
-          this.#modeFromModes = { ...this.#modeFromModes, currentValue: params.update.currentModeId };
-          this.#publishOptions(this.#agentOptions);
+        if (!intercepted && params.update.sessionUpdate === 'current_mode_update') {
+          const next = params.update.currentModeId;
+          if (this.#modeFromModes) {
+            this.#modeFromModes = { ...this.#modeFromModes, currentValue: next };
+            this.#publishOptions(this.#agentOptions);
+          } else if (this.#agentOptions.some((o) => this.#isModeOption(o) && o.currentValue !== next)) {
+            // The agent reports its mode as a regular option: keep that option in step with an announced change.
+            this.#publishOptions(this.#agentOptions.map((o) => (this.#isModeOption(o) ? { ...o, currentValue: next } : o)));
+          }
           return;
         }
         const event = intercepted ? { type: 'unsupported' as const, ...intercepted } : normalizeUpdate(params.update);
@@ -259,6 +265,10 @@ export class AcpSession {
     await this.#conn.agent
       .notify(methods.agent.session.cancel, { sessionId: this.#sessionId })
       .catch(() => {}); // a closed connection is reported through the disconnect path
+  }
+
+  #isModeOption(o: ConfigOption): boolean {
+    return o.id === 'mode' || o.category === 'mode';
   }
 
   /** Emits the agent's options (plus the synthesized mode option, if any) as one `config_options` event. */

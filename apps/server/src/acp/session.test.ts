@@ -371,4 +371,29 @@ describe('AcpSession', () => {
     expect(Date.now() - t0).toBeLessThan(3000);
     expect(events).toEqual([{ type: 'status', status: 'disconnected', reason: 'start_timeout' }]);
   });
+
+  const ids = (e: NormalizedEvent | undefined) => (e?.type === 'config_options' ? e.options.map((o) => o.id) : null);
+  const lastOptions = (events: NormalizedEvent[]) => events.findLast((e) => e.type === 'config_options');
+
+  it('(l) an agent reporting modes plus options without a mode option gets a synthesized one that survives updates', async () => {
+    const { session, events } = await start('modes_plus_model');
+    expect(ids(lastOptions(events))).toEqual(['model', 'mode']);
+    await session.setConfig('model', 'smart');
+    expect(ids(lastOptions(events))).toEqual(['model', 'mode']);
+  });
+
+  it('(m) an agent reporting a mode option AND modes yields exactly one mode option', async () => {
+    const { events } = await start('mode_in_options');
+    expect(ids(lastOptions(events))).toEqual(['mode', 'model']);
+  });
+
+  it('(n) an agent-initiated current_mode_update patches an existing mode option', async () => {
+    const { session, events } = await start('mode_stale');
+    await session.setConfig('mode', 'plan');
+    await vi.waitFor(() => {
+      const last = lastOptions(events);
+      const mode = last?.type === 'config_options' ? last.options.find((o) => o.id === 'mode') : undefined;
+      if (mode?.currentValue !== 'plan') throw new Error(`mode still ${mode?.currentValue}`);
+    });
+  });
 });

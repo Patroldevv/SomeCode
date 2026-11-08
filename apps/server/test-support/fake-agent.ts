@@ -26,6 +26,30 @@ let model = 'fast';
 let mode = 'default';
 let activeTurn: AbortController | null = null;
 
+function modesBlock() {
+  return {
+    currentModeId: mode,
+    availableModes: [
+      { id: 'default', name: 'Default', description: 'Ask before changes' },
+      { id: 'plan', name: 'Plan' },
+    ],
+  };
+}
+
+function modeOption(current: string): SessionConfigOption {
+  return {
+    id: 'mode',
+    name: 'Mode',
+    type: 'select',
+    category: 'mode',
+    currentValue: current,
+    options: [
+      { value: 'default', name: 'Default' },
+      { value: 'plan', name: 'Plan' },
+    ],
+  } as unknown as SessionConfigOption;
+}
+
 function configOptions(): SessionConfigOption[] {
   return [
     {
@@ -274,6 +298,10 @@ const connection = agent({ name: 'fake' })
   })
   .onRequest(methods.agent.session.new, () => {
     if (scenario === 'new_auth_error') throw RequestError.authRequired(undefined, 'please log in');
+    if (scenario === 'modes_plus_model') return { sessionId: SESSION_ID, modes: modesBlock(), configOptions: configOptions() };
+    if (scenario === 'mode_in_options' || scenario === 'mode_stale') {
+      return { sessionId: SESSION_ID, modes: modesBlock(), configOptions: [modeOption(mode), ...configOptions()] };
+    }
     return scenario === 'modes_only'
       ? {
           // An agent that only reports `modes` (no configOptions).
@@ -296,7 +324,20 @@ const connection = agent({ name: 'fake' })
     });
     return {};
   })
-  .onRequest(methods.agent.session.setConfigOption, ({ params }) => {
+  .onRequest(methods.agent.session.setConfigOption, ({ params, client }) => {
+    if (scenario === 'mode_stale' && params.configId === 'mode' && typeof params.value === 'string') {
+      // The reply still shows the OLD mode; the change is announced afterwards via current_mode_update only.
+      const old = mode;
+      const next = params.value;
+      mode = next;
+      setTimeout(() => {
+        void client.notify(methods.client.session.update, {
+          sessionId: SESSION_ID,
+          update: { sessionUpdate: 'current_mode_update', currentModeId: next },
+        });
+      }, 30);
+      return { configOptions: [modeOption(old), ...configOptions()] };
+    }
     if (params.configId !== 'model' || typeof params.value !== 'string') {
       throw RequestError.invalidParams(undefined, `unknown config ${params.configId}`);
     }

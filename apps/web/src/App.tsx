@@ -44,6 +44,11 @@ export function Client({ token, api: injectedApi, createSocket, store: injectedS
   const [activeId, setActiveId] = useState<string | null>(restoredId);
   const [banner, setBanner] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
+  // Opening the dialog re-reads the agents: sign-in state may have changed since the page loaded.
+  const openDialog = () => {
+    reloadAgents();
+    setDialogOpen(true);
+  };
   const [sidebarOpen, toggleSidebar] = useSidebarOpen();
 
   const showError = useCallback((code: string, params?: MessageParams) => setBanner(errorText(code, params)), []);
@@ -55,7 +60,7 @@ export function Client({ token, api: injectedApi, createSocket, store: injectedS
     onRestoreFailed: (id) => setActiveId((current) => (current === id ? null : current)),
     ...(createSocket ? { createSocket } : {}),
   });
-  const { agents, groups, reload } = useCatalog(api, showError);
+  const { agents, groups, reload, reloadAgents } = useCatalog(api, showError);
 
   const select = (sessionId: string) => {
     // A banner is about the session it happened in.
@@ -102,7 +107,7 @@ export function Client({ token, api: injectedApi, createSocket, store: injectedS
           agents={agents}
           connection={state}
           onSelect={select}
-          onNewSession={() => setDialogOpen(true)}
+          onNewSession={openDialog}
         />
       )}
       <main className="flex min-w-0 flex-1 flex-col">
@@ -128,7 +133,7 @@ export function Client({ token, api: injectedApi, createSocket, store: injectedS
               </div>
             )}
             <div className="min-h-0 flex-1">
-              <EmptyState onNewSession={() => setDialogOpen(true)} />
+              <EmptyState onNewSession={openDialog} />
             </div>
           </>
         )}

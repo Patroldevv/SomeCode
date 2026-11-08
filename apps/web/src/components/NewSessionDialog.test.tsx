@@ -186,3 +186,30 @@ describe('NewSessionDialog sign-in warning', () => {
     expect(screen.queryByText(en['newSession.signedOut'])).not.toBeInTheDocument();
   });
 });
+
+describe('NewSessionDialog sign-in failure at session start', () => {
+  it('shows the sign-in command when creating the session fails with auth_required', async () => {
+    const signedOut: AgentInfo[] = [{ id: 'claude', label: 'Claude', installed: true, auth: 'signed_in', signInHint: 'claude auth login' }];
+    const onCreate = vi.fn(async () => {
+      throw new ApiError('auth_required');
+    });
+    renderDialog({ agents: signedOut, onCreate });
+    const user = userEvent.setup();
+    await user.type(path(), '/tmp');
+    await user.click(submit());
+    expect(await screen.findByText(en['error.auth_required'])).toBeInTheDocument();
+    expect(screen.getByText('claude auth login')).toBeInTheDocument();
+  });
+
+  it('shows no command for other failures', async () => {
+    const onCreate = vi.fn(async () => {
+      throw new ApiError('bad_request');
+    });
+    renderDialog({ agents: [{ id: 'claude', label: 'Claude', installed: true, signInHint: 'claude auth login' }], onCreate });
+    const user = userEvent.setup();
+    await user.type(path(), '/tmp');
+    await user.click(submit());
+    expect(await screen.findByText(en['error.bad_request'])).toBeInTheDocument();
+    expect(screen.queryByText('claude auth login')).not.toBeInTheDocument();
+  });
+});

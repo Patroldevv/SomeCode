@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState, type FormEvent } from 'react';
 import { errorText, t } from '../i18n/index.ts';
+import { CommandHint } from './CommandHint.tsx';
 import { ApiError, type AgentInfo } from '../lib/api.ts';
 import { PRIMARY_BUTTON } from './EmptyState.tsx';
 
@@ -42,7 +43,7 @@ export function NewSessionDialog({
   const [name, setName] = useState('');
   const [path, setPath] = useState('');
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<{ code: string; text: string } | null>(null);
   const busyRef = useRef(false);
 
   useEffect(() => {
@@ -58,6 +59,7 @@ export function NewSessionDialog({
 
   // Only installed agents can be picked; until the user picks one, the first installed agent is selected.
   const selected = agents.some((a) => a.id === agentId && a.installed) ? agentId : (agents.find((a) => a.installed)?.id ?? '');
+  const selectedHint = agents.find((a) => a.id === selected)?.signInHint;
   const trimmedPath = path.trim();
   const relative = trimmedPath !== '' && !trimmedPath.startsWith('/');
   const canSubmit = !busy && selected !== '' && trimmedPath !== '' && !relative;
@@ -75,7 +77,7 @@ export function NewSessionDialog({
       onClose();
     } catch (err) {
       const code = err instanceof ApiError ? err.code : 'internal';
-      if (ref.current?.open) setError(errorText(code));
+      if (ref.current?.open) setError({ code, text: errorText(code) });
       else onError(code);
     } finally {
       busyRef.current = false;
@@ -150,9 +152,15 @@ export function NewSessionDialog({
           </label>
         </fieldset>
         {error && (
-          <p role="alert" className="text-sm text-danger">
-            {error}
-          </p>
+          <div role="alert" className="flex flex-col gap-1.5 text-sm text-danger">
+            <p>{error.text}</p>
+            {error.code === 'auth_required' && selectedHint && (
+              <div className="flex min-w-0 flex-col gap-1 text-text">
+                <p className="text-xs text-text-muted">{t('signin.instruction')}</p>
+                <CommandHint command={selectedHint} />
+              </div>
+            )}
+          </div>
         )}
         <div className="flex justify-end gap-2">
           <button type="button" className={SECONDARY_BUTTON} disabled={busy} onClick={onClose}>

@@ -451,3 +451,29 @@ describe('sign-in hint', () => {
     expect(within(alert).getByText('claude auth login')).toBeInTheDocument();
   });
 });
+
+describe('agent status refresh', () => {
+  const agentsWith = (auth: 'signed_out' | 'signed_in') => [
+    { id: 'claude', label: 'Claude Code', installed: true, auth, signInHint: 'claude auth login' },
+  ];
+
+  it('re-reads the agents when the window regains focus, so a finished sign-in shows up', async () => {
+    const api = fakeApi();
+    api.agents.mockResolvedValueOnce(agentsWith('signed_out')).mockResolvedValue(agentsWith('signed_in'));
+    await renderClient(api);
+    expect(await screen.findByText('Sign-in needed')).toBeInTheDocument();
+    act(() => {
+      window.dispatchEvent(new Event('focus'));
+    });
+    expect(await screen.findByText('Signed in')).toBeInTheDocument();
+    expect(screen.queryByText('Sign-in needed')).not.toBeInTheDocument();
+  });
+
+  it('re-reads the agents when the new-session dialog opens', async () => {
+    const api = fakeApi();
+    await renderClient(api);
+    const before = api.agents.mock.calls.length;
+    await userEvent.setup().click(screen.getAllByRole('button', { name: 'New session' })[0]!);
+    await waitFor(() => expect(api.agents.mock.calls.length).toBeGreaterThan(before));
+  });
+});
