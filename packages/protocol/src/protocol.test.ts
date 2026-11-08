@@ -35,3 +35,20 @@ describe('protocol', () => {
     expect(err).toBeInstanceOf(Error);
   });
 });
+
+describe('config_options event', () => {
+  const option = { id: 'model', name: 'Model', currentValue: 'a', choices: [{ value: 'a', name: 'A' }] };
+
+  it('accepts typed options with optional category and descriptions', () => {
+    const parsed = normalizedEventSchema.parse({
+      type: 'config_options',
+      options: [{ ...option, category: 'model', description: 'd', choices: [{ value: 'a', name: 'A', description: 'x' }] }],
+    });
+    expect(parsed.type).toBe('config_options');
+  });
+
+  it('rejects options that are not typed option objects', () => {
+    expect(normalizedEventSchema.safeParse({ type: 'config_options', options: { nope: 1 } }).success).toBe(false);
+    expect(normalizedEventSchema.safeParse({ type: 'config_options', options: [{ id: 'x' }] }).success).toBe(false);
+  });
+});

@@ -98,6 +98,8 @@ export function normalizeUpdate(update: SessionUpdate): NormalizedEvent | null {
           priority: e.priority,
         })),
       };
+    case 'config_option_update':
+      return normalizeConfigOptions(update.configOptions);
     case 'usage_update':
     case 'session_info_update':
     case 'available_commands_update':
@@ -126,6 +128,42 @@ export function normalizePermission(
   };
 }
 
+type Choice = { value: string; name: string; description?: string };
+
+function flattenChoices(options: unknown): Choice[] {
+  if (!Array.isArray(options)) return [];
+  const out: Choice[] = [];
+  for (const item of options as Array<Record<string, unknown>>) {
+    if (Array.isArray(item.options)) {
+      out.push(...flattenChoices(item.options)); // a group: its options
+    } else if (typeof item.value === 'string') {
+      out.push({
+        value: item.value,
+        name: typeof item.name === 'string' ? item.name : item.value,
+        ...(typeof item.description === 'string' && item.description ? { description: item.description } : {}),
+      });
+    }
+  }
+  return out;
+}
+
+/** Select options only (booleans are not rendered yet); empty and duplicate-id options are dropped. */
 export function normalizeConfigOptions(options: SessionConfigOption[]): ConfigOptionsEvent {
-  return { type: 'config_options', options };
+  const seen = new Set<string>();
+  const out: ConfigOptionsEvent['options'] = [];
+  for (const o of options as unknown as Array<Record<string, unknown>>) {
+    if (o.type !== 'select' || typeof o.id !== 'string' || seen.has(o.id)) continue;
+    const choices = flattenChoices(o.options);
+    if (choices.length === 0) continue;
+    seen.add(o.id);
+    out.push({
+      id: o.id,
+      name: typeof o.name === 'string' ? o.name : o.id,
+      ...(typeof o.category === 'string' ? { category: o.category } : {}),
+      ...(typeof o.description === 'string' && o.description ? { description: o.description } : {}),
+      currentValue: String(o.currentValue),
+      choices,
+    });
+  }
+  return { type: 'config_options', options: out };
 }

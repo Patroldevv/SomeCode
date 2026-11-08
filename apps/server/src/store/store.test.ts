@@ -146,7 +146,7 @@ describe('store', () => {
         'config_options',
         {
           type: 'config_options',
-          options: [{ id: 'model', name: huge, type: 'select', currentValue: 'a', options: [{ value: 'a', name: huge }] }],
+          options: [{ id: 'model', name: huge, currentValue: 'a', choices: [{ value: 'a', name: huge }] }],
         },
       ],
       [
@@ -164,7 +164,12 @@ describe('store', () => {
         'deeply many-parts config_options',
         {
           type: 'config_options',
-          options: Array.from({ length: 120 }, () => Array.from({ length: 120 }, () => 'q'.repeat(1500))),
+          options: Array.from({ length: 120 }, (_, i) => ({
+            id: `o${i}`,
+            name: 'n',
+            currentValue: 'a',
+            choices: Array.from({ length: 120 }, () => ({ value: 'q'.repeat(1500), name: 'q'.repeat(1500) })),
+          })),
         },
       ],
     ];

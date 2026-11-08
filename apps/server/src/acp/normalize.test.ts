@@ -4,6 +4,7 @@ import type {
   SessionUpdate,
 } from '@agentclientprotocol/sdk';
 import { describe, expect, it } from 'vitest';
+import { AGY_OPTIONS, CLAUDE_OPTIONS } from '../../test-support/config-fixtures.ts';
 import { normalizeConfigOptions, normalizePermission, normalizeUpdate } from './normalize.ts';
 
 describe('normalizeUpdate', () => {
@@ -153,14 +154,19 @@ describe('normalizeUpdate', () => {
   });
 
   it('keeps known-but-unmodeled updates visible as unsupported', () => {
-    const update = {
-      sessionUpdate: 'config_option_update',
-      configOptions: [],
-    } as unknown as SessionUpdate;
-    expect(normalizeUpdate(update)).toMatchObject({
-      type: 'unsupported',
-      sessionUpdate: 'config_option_update',
-    });
+    const update = { sessionUpdate: 'notice', message: 'x' } as unknown as SessionUpdate;
+    expect(normalizeUpdate(update)).toMatchObject({ type: 'unsupported', sessionUpdate: 'notice' });
+  });
+
+  it('maps config_option_update to a config_options event', () => {
+    const update = { sessionUpdate: 'config_option_update', configOptions: AGY_OPTIONS } as unknown as SessionUpdate;
+    const event = normalizeUpdate(update);
+    expect(event).toMatchObject({ type: 'config_options' });
+    expect(event?.type === 'config_options' && event.options.map((o) => o.id)).toEqual([
+      'model',
+      'thought_level',
+      'mode',
+    ]);
   });
 
   it.each(['usage_update', 'session_info_update', 'available_commands_update', 'current_mode_update'])(
@@ -201,16 +207,62 @@ describe('normalizePermission', () => {
 });
 
 describe('normalizeConfigOptions', () => {
-  it('wraps options into a config_options event', () => {
-    const options = [
+  it('maps the Claude adapter shape', () => {
+    const event = normalizeConfigOptions(CLAUDE_OPTIONS);
+    expect(event.options.map((o) => [o.id, o.category, o.currentValue])).toEqual([
+      ['mode', 'mode', 'auto'],
+      ['model', 'model', 'sonnet'],
+      ['effort', 'thought_level', 'high'],
+      ['agent', undefined, 'default'],
+    ]);
+    expect(event.options[1]?.choices.map((c) => c.value)).toEqual(['default', 'opus', 'sonnet', 'fable', 'haiku']);
+    expect(event.options[0]).toEqual({
+      id: 'mode',
+      name: 'Mode',
+      category: 'mode',
+      currentValue: 'auto',
+      choices: expect.any(Array),
+    });
+  });
+
+  it('maps the Antigravity shape', () => {
+    const event = normalizeConfigOptions(AGY_OPTIONS);
+    expect(event.options.map((o) => [o.id, o.category])).toEqual([
+      ['model', 'model'],
+      ['thought_level', 'thought_level'],
+      ['mode', 'mode'],
+    ]);
+  });
+
+  it('flattens grouped options, keeping descriptions', () => {
+    const grouped = [
       {
         id: 'model',
         name: 'Model',
         type: 'select',
-        currentValue: 'a',
-        options: [{ value: 'a', name: 'A' }],
+        category: 'model',
+        currentValue: 'b',
+        options: [
+          { group: 'g1', name: 'G1', options: [{ value: 'a', name: 'A', description: 'first' }] },
+          { group: 'g2', name: 'G2', options: [{ value: 'b', name: 'B' }] },
+        ],
       },
     ] as unknown as SessionConfigOption[];
-    expect(normalizeConfigOptions(options)).toEqual({ type: 'config_options', options });
+    expect(normalizeConfigOptions(grouped).options[0]?.choices).toEqual([
+      { value: 'a', name: 'A', description: 'first' },
+      { value: 'b', name: 'B' },
+    ]);
+  });
+
+  it('skips boolean options, empty selects and duplicate ids, and keeps a current value that is not listed', () => {
+    const odd = [
+      { id: 'flag', name: 'Flag', type: 'boolean', currentValue: true },
+      { id: 'empty', name: 'Empty', type: 'select', currentValue: 'x', options: [] },
+      { id: 'model', name: 'Model', type: 'select', currentValue: 'ghost', options: [{ value: 'a', name: 'A' }] },
+      { id: 'model', name: 'Dup', type: 'select', currentValue: 'a', options: [{ value: 'a', name: 'A' }] },
+    ] as unknown as SessionConfigOption[];
+    const options = normalizeConfigOptions(odd).options;
+    expect(options.map((o) => o.id)).toEqual(['model']);
+    expect(options[0]).toMatchObject({ name: 'Model', currentValue: 'ghost' });
   });
 });

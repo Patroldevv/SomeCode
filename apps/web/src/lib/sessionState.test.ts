@@ -345,3 +345,31 @@ describe('applyEvent', () => {
     expect(state.items[2]?.key).toBe('10');
   });
 });
+
+describe('config options', () => {
+  const opt = (id: string, currentValue: string) => ({
+    id,
+    name: id,
+    currentValue,
+    choices: [{ value: currentValue, name: currentValue }],
+  });
+
+  it('keeps the latest config_options list and advances lastSeq', () => {
+    const state = run([
+      ev(1, { type: 'config_options', options: [opt('model', 'a')] }),
+      ev(2, { type: 'config_options', options: [opt('model', 'b'), opt('mode', 'plan')] }),
+    ]);
+    expect(state.configOptions?.map((o) => [o.id, o.currentValue])).toEqual([
+      ['model', 'b'],
+      ['mode', 'plan'],
+    ]);
+    expect(state.lastSeq).toBe(2);
+  });
+
+  it('ignores a malformed list without breaking the state', () => {
+    const before = run([ev(1, { type: 'config_options', options: [opt('model', 'a')] })]);
+    const after = applyEvent(before, ev(2, { type: 'config_options', options: { not: 'a list' } } as never));
+    expect(after.configOptions).toEqual(before.configOptions);
+    expect(after.lastSeq).toBe(2);
+  });
+});

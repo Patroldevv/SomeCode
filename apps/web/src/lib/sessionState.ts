@@ -1,4 +1,4 @@
-import type { ErrorCode, StoredEvent } from '@somecode/protocol';
+import { configOptionSchema, type ConfigOption, type ErrorCode, type StoredEvent } from '@somecode/protocol';
 
 export type SessionStatus = 'ready' | 'running' | 'disconnected';
 
@@ -50,6 +50,8 @@ export type ThoughtItem = Extract<Item, { kind: 'thought' }>;
 export type ToolItem = Extract<Item, { kind: 'tool' }>;
 
 export type SessionState = {
+  /** The agent's select options (model, mode, effort, …) as last reported; null until reported. */
+  configOptions: ConfigOption[] | null;
   lastSeq: number;
   items: Item[];
   status: SessionStatus;
@@ -59,6 +61,7 @@ export type SessionState = {
 };
 
 export const initialState = (): SessionState => ({
+  configOptions: null,
   lastSeq: 0,
   items: [],
   status: 'ready',
@@ -234,7 +237,10 @@ export function applyEvent(state: SessionState, stored: StoredEvent): SessionSta
       return e.error ? { ...current, items: [...items, { kind: 'error', key, code: e.error.code }] } : current;
     case 'plan':
       return { ...current, plan: e.entries.map((p) => ({ content: p.content, status: p.status, priority: p.priority })) };
-    case 'config_options':
-      return current;
+    case 'config_options': {
+      // Journals written before the typed shape may hold raw SDK options: ignore what doesn't fit.
+      const parsed = configOptionSchema.array().safeParse(e.options);
+      return parsed.success ? { ...current, configOptions: parsed.data } : current;
+    }
   }
 }

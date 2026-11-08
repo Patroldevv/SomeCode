@@ -1,6 +1,24 @@
 import { z } from 'zod';
 import { errorCodeSchema } from './errors.ts';
 
+export const configChoiceSchema = z.object({
+  value: z.string(),
+  name: z.string(),
+  description: z.string().optional(),
+});
+export type ConfigChoice = z.infer<typeof configChoiceSchema>;
+
+/** A select-type session option the agent exposes (model, mode, effort, …). */
+export const configOptionSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  category: z.string().optional(),
+  description: z.string().optional(),
+  currentValue: z.string(),
+  choices: z.array(configChoiceSchema),
+});
+export type ConfigOption = z.infer<typeof configOptionSchema>;
+
 export const toolContentSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('text'), text: z.string() }),
   z.object({
@@ -68,7 +86,7 @@ export const normalizedEventSchema = z.discriminatedUnion('type', [
     status: z.enum(['ready', 'running', 'disconnected']),
     reason: z.string().optional(),
   }),
-  z.object({ type: z.literal('config_options'), options: z.unknown() }),
+  z.object({ type: z.literal('config_options'), options: z.array(configOptionSchema) }),
   z.object({
     type: z.literal('unsupported'),
     sessionUpdate: z.string(),

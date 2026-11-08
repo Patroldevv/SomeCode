@@ -46,9 +46,8 @@ const CONFIG = (currentValue: string) => ({
     {
       id: 'model',
       name: 'Model',
-      type: 'select',
       currentValue,
-      options: [
+      choices: [
         { value: 'fast', name: 'Fast' },
         { value: 'smart', name: 'Smart' },
       ],
