@@ -32,6 +32,13 @@ function startTimeoutMs(opts: StartOptions): number {
   return opts.timeoutMs ?? (Number.isFinite(fromEnv) && fromEnv > 0 ? fromEnv : DEFAULT_START_TIMEOUT_MS);
 }
 
+/** What the agent announced in `initialize` (diagnostics and the handshake check). */
+export type AgentInfo = {
+  agentInfo?: { name: string; version?: string };
+  authMethods: Array<{ id: string; name: string }>;
+  loadSession: boolean;
+};
+
 type ModeState = { currentModeId: string; availableModes: Array<{ id: string; name: string; description?: string | null }> };
 
 /** An agent that only reports `modes` gets a synthesized `mode` option so the UI can treat it like any other. */
@@ -80,6 +87,7 @@ export class AcpSession {
   /** The options the agent reported, and the synthesized `mode` option when it only reports `modes`. */
   #agentOptions: ConfigOption[] = [];
   #modeFromModes: ConfigOption | null = null;
+  #info: AgentInfo = { authMethods: [], loadSession: false };
 
   static async start(opts: StartOptions): Promise<AcpSession> {
     const launch = opts.driver.launch();
@@ -176,6 +184,10 @@ export class AcpSession {
     return this.#sessionId;
   }
 
+  get info(): AgentInfo {
+    return this.#info;
+  }
+
   async #open(cwd: string): Promise<void> {
     const init = await this.#conn.agent.request(methods.agent.initialize, {
       protocolVersion: PROTOCOL_VERSION,
@@ -185,6 +197,13 @@ export class AcpSession {
     if (init.protocolVersion !== PROTOCOL_VERSION) {
       throw new SomeCodeError('internal', `unsupported ACP protocol version ${init.protocolVersion}`);
     }
+    this.#info = {
+      ...(init.agentInfo
+        ? { agentInfo: { name: init.agentInfo.name, ...(init.agentInfo.version ? { version: init.agentInfo.version } : {}) } }
+        : {}),
+      authMethods: (init.authMethods ?? []).map((m) => ({ id: m.id, name: m.name })),
+      loadSession: init.agentCapabilities?.loadSession === true,
+    };
     const res = await this.#conn.agent.request(methods.agent.session.new, { cwd, mcpServers: [] });
     this.#sessionId = res.sessionId;
     const reported = res.configOptions ? normalizeConfigOptions(res.configOptions).options : [];

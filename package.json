@@ -15,6 +15,7 @@
   "scripts": {
     "start": "node bin/somecode.ts",
     "demo": "node scripts/demo.ts",
+    "handshake": "node scripts/handshake.ts",
     "test": "vitest run",
     "typecheck": "tsc -b"
   },

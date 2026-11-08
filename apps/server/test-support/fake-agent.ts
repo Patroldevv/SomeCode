@@ -265,10 +265,16 @@ if (scenario === 'garbage') process.stdout.write('not json\n');
 const connection = agent({ name: 'fake' })
   .onRequest(methods.agent.initialize, async () => {
     if (scenario === 'slow_start') await sleep(30_000); // never finishes starting in a test
-    return { protocolVersion: PROTOCOL_VERSION, agentCapabilities: {}, authMethods: [] };
+    return {
+      protocolVersion: PROTOCOL_VERSION,
+      agentInfo: { name: 'fake-agent', version: '1.0.0' },
+      agentCapabilities: { loadSession: true },
+      authMethods: [{ id: 'fake-login', name: 'Fake login' }],
+    };
   })
-  .onRequest(methods.agent.session.new, () =>
-    scenario === 'modes_only'
+  .onRequest(methods.agent.session.new, () => {
+    if (scenario === 'new_auth_error') throw RequestError.authRequired(undefined, 'please log in');
+    return scenario === 'modes_only'
       ? {
           // An agent that only reports `modes` (no configOptions).
           sessionId: SESSION_ID,
@@ -280,8 +286,8 @@ const connection = agent({ name: 'fake' })
             ],
           },
         }
-      : { sessionId: SESSION_ID, configOptions: configOptions() },
-  )
+      : { sessionId: SESSION_ID, configOptions: configOptions() };
+  })
   .onRequest(methods.agent.session.setMode, async ({ params, client }) => {
     mode = params.modeId;
     await client.notify(methods.client.session.update, {
