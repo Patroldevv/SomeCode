@@ -28,8 +28,15 @@ else
   home_dir="${prefix:-${XDG_DATA_HOME:-$HOME/.local/share}/somecode}"; bin_dir="$HOME/.local/bin"
 fi
 
+if [ "$(id -u)" -eq 0 ]; then
+  apps_dir="/usr/share/applications"; icon_dir="/usr/share/icons/hicolor/scalable/apps"
+else
+  apps_dir="${XDG_DATA_HOME:-$HOME/.local/share}/applications"; icon_dir="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/scalable/apps"
+fi
+
 if [ "$uninstall" -eq 1 ]; then
-  rm -rf "$home_dir" "$bin_dir/somecode"
+  rm -rf "$home_dir" "$bin_dir/somecode" "$apps_dir/somecode.desktop" "$icon_dir/somecode.svg"
+  command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$apps_dir" 2>/dev/null || true
   say "SomeCode removed (your chats in ~/.local/share/somecode-data or the app data folder are kept)."
   exit 0
 fi
@@ -81,6 +88,27 @@ cat > "$bin_dir/somecode" <<LAUNCH
 exec "$node_bin" "$home_dir/bin/somecode.ts" "\$@"
 LAUNCH
 chmod +x "$bin_dir/somecode"
+
+# An entry for the application menu and desktop search, with an icon.
+mkdir -p "$apps_dir" "$icon_dir"
+cat > "$icon_dir/somecode.svg" <<'ICON'
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128"><rect width="128" height="128" rx="28" fill="#111111"/><path d="M48 38 22 64l26 26M80 38l26 26-26 26" fill="none" stroke="#f2f2f2" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/><path d="M72 30 56 98" stroke="#8b8bff" stroke-width="8" stroke-linecap="round"/></svg>
+ICON
+cat > "$apps_dir/somecode.desktop" <<DESKTOP
+[Desktop Entry]
+Type=Application
+Name=SomeCode
+GenericName=Coding agents
+Comment=Work with Claude, OpenCode and Antigravity in one place
+Exec=$bin_dir/somecode
+Icon=somecode
+Terminal=false
+Categories=Development;IDE;
+Keywords=code;agent;claude;ai;
+StartupWMClass=SomeCode
+DESKTOP
+command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$apps_dir" 2>/dev/null || true
+command -v gtk-update-icon-cache >/dev/null 2>&1 && gtk-update-icon-cache -q -t "${icon_dir%/hicolor/*}/hicolor" 2>/dev/null || true
 
 say "SomeCode $(cat "$home_dir/VERSION" 2>/dev/null || echo '') is installed: $bin_dir/somecode"
 case ":$PATH:" in *":$bin_dir:"*) ;; *) echo "    Add $bin_dir to your PATH:  export PATH=\"$bin_dir:\$PATH\"" ;; esac
