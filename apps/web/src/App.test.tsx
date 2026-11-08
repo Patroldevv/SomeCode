@@ -365,3 +365,73 @@ describe('Client', () => {
     expect(screen.getAllByRole('img', { name: 'Agent disconnected' })).toHaveLength(2);
   });
 });
+
+describe('config chips', () => {
+  const options = (model: string) => [
+    {
+      id: 'mode',
+      name: 'Mode',
+      category: 'mode',
+      currentValue: 'auto',
+      choices: ['default', 'plan', 'auto'].map((value) => ({ value, name: value })),
+    },
+    {
+      id: 'model',
+      name: 'Model',
+      category: 'model',
+      currentValue: model,
+      choices: ['sonnet', 'opus'].map((value) => ({ value, name: value })),
+    },
+  ];
+
+  async function openSession() {
+    sessionStorage.setItem('somecode.activeSession', 's1');
+    await renderClient();
+    socket().open();
+    socket().receive({ type: 'subscribed', sessionId: 's1', lastSeq: 0 });
+    socket().receive(event(1, 's1', { type: 'config_options', options: options('sonnet') }));
+  }
+
+  async function choose(user: ReturnType<typeof userEvent.setup>, chip: string, item: string) {
+    await user.click(screen.getByRole('button', { name: chip }));
+    await user.click(screen.getByRole('menuitemradio', { name: item }));
+  }
+
+  it('shows the agent options, sends set_config and changes only when the agent confirms', async () => {
+    await openSession();
+    const user = userEvent.setup();
+    await choose(user, 'Model: sonnet', 'opus');
+    expect(socket().ofType('set_config')).toEqual([{ type: 'set_config', sessionId: 's1', configId: 'model', value: 'opus' }]);
+    const chip = screen.getByRole('button', { name: 'Model: sonnet' });
+    expect(chip).toHaveAttribute('aria-busy', 'true');
+    socket().receive(event(2, 's1', { type: 'config_options', options: options('opus') }));
+    expect(screen.getByRole('button', { name: 'Model: opus' })).toHaveAttribute('aria-busy', 'false');
+    expect(screen.queryByRole('button', { name: 'Model: sonnet' })).not.toBeInTheDocument();
+  });
+
+  it('shows a banner and keeps the old value when the agent rejects the change', async () => {
+    await openSession();
+    const user = userEvent.setup();
+    await choose(user, 'Model: sonnet', 'opus');
+    socket().receive({ type: 'error', code: 'bad_request', message: 'invalid value' });
+    expect(screen.getByRole('alert')).toHaveTextContent(en['error.bad_request']);
+    const chip = screen.getByRole('button', { name: 'Model: sonnet' });
+    expect(chip).toHaveAttribute('aria-busy', 'false');
+  });
+
+  it('disables the chips while a turn runs', async () => {
+    await openSession();
+    socket().receive(event(2, 's1', { type: 'status', status: 'running' }));
+    expect(screen.getByRole('button', { name: 'Model: sonnet' })).toBeDisabled();
+    socket().receive(event(3, 's1', { type: 'status', status: 'ready' }));
+    expect(screen.getByRole('button', { name: 'Model: sonnet' })).toBeEnabled();
+  });
+
+  it('shows no chip row for an agent that reports no options', async () => {
+    sessionStorage.setItem('somecode.activeSession', 's1');
+    await renderClient();
+    socket().open();
+    socket().receive({ type: 'subscribed', sessionId: 's1', lastSeq: 0 });
+    expect(screen.queryByRole('group', { name: 'Session options' })).not.toBeInTheDocument();
+  });
+});

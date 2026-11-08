@@ -1,4 +1,4 @@
-import { useReducer, useRef, type ReactNode } from 'react';
+import { useEffect, useReducer, useRef, useState, type ReactNode } from 'react';
 import type { ClientMessage } from '@somecode/protocol';
 import { t, type MessageParams } from '../i18n/index.ts';
 import type { ConnectionState } from '../lib/connection.ts';
@@ -6,11 +6,14 @@ import { groupDigits, MAX_PROMPT_BYTES, promptBytes } from '../lib/format.ts';
 import { planAnswer } from '../lib/permissionAnswers.ts';
 import { useDraft, useSession, type SessionsStore } from '../lib/sessionsStore.ts';
 import { Composer } from './Composer.tsx';
+import { ConfigChips } from './ConfigChips.tsx';
 import { CrossIcon } from './icons.tsx';
 import { MessageList } from './MessageList.tsx';
 import { dotStatus, StatusDot } from './StatusDot.tsx';
 
 const NONE: ReadonlySet<string> = new Set();
+/** Safety net: stop showing a change as pending if the agent never answers. */
+const CONFIG_PENDING_MS = 10_000;
 
 /** The header strip above the conversation; `leading` holds the sidebar toggle. */
 export function ChatHeader({ leading, children }: { leading: ReactNode; children?: ReactNode }) {
@@ -101,6 +104,29 @@ export function ChatView({
     rerender();
   };
 
+  // The option whose change was requested and not yet confirmed. The shown value only ever comes from the agent's
+  // own `config_options`, so the request is pending until the value moves, an error shows up, or it times out.
+  const [pending, setPending] = useState<{ id: string; from: string } | null>(null);
+  const confirmed = pending ? state.configOptions?.find((o) => o.id === pending.id)?.currentValue : undefined;
+  useEffect(() => {
+    if (pending && confirmed !== undefined && confirmed !== pending.from) setPending(null);
+  }, [pending, confirmed]);
+  useEffect(() => {
+    if (banner) setPending(null);
+  }, [banner]);
+  useEffect(() => {
+    if (!pending) return;
+    const timer = setTimeout(() => setPending(null), CONFIG_PENDING_MS);
+    return () => clearTimeout(timer);
+  }, [pending]);
+
+  const onConfigChange = (configId: string, value: string) => {
+    const from = state.configOptions?.find((o) => o.id === configId)?.currentValue;
+    if (from === undefined || from === value) return;
+    if (send({ type: 'set_config', sessionId, configId, value })) setPending({ id: configId, from });
+    else onError('network');
+  };
+
   const onCancel = () => {
     if (!send({ type: 'cancel', sessionId })) onError('network');
   };
@@ -137,6 +163,12 @@ export function ChatView({
           disabled={state.status === 'disconnected'}
           onSend={onSend}
           onCancel={onCancel}
+        />
+        <ConfigChips
+          options={state.configOptions}
+          disabled={state.status !== 'ready'}
+          pendingId={pending?.id ?? null}
+          onChange={onConfigChange}
         />
       </div>
     </div>
