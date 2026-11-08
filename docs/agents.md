@@ -30,3 +30,13 @@ Ajanı başlatır, `initialize` + `session/new` yapar, duyurduklarını yazar ve
 Gerçek bir tur (model kotasını harcar) ayrıca ve bilinçli çalıştırılmalıdır: çalışan bir sunucuya `scripts/smoke.ts` ile (bkz. `docs/smoke-tests.md`).
 
 ## Sonuçlar
+
+### 2026-11-08 — gerçek ajanlarla (prompt gönderilmeden)
+
+- `npm run handshake -- claude|opencode|agy` üçü de başarılı. Claude adaptörü `authMethods` bildirmiyor ve `claude auth status` oturum açık dedi (`auth=signed_in`); OpenCode giriş yöntemi `opencode-login`; Antigravity dört giriş yöntemi bildirdi. Modeller: Claude 13 seçenek, OpenCode ücretsiz modeller ("opencode/Big Pickle" …), Antigravity 5 model.
+- Gerçek sunucu + yerleşik tarayıcıda (`npm start -- --no-open`, geçici veri dizini): kenar çubuğu ajan listesi (Claude "Giriş yapıldı", OpenCode ve Antigravity "Kurulu"); her ajanla oturum açıldı ve çipler ajanın kendi seçenekleriyle göründü.
+  - Claude: Mode Auto, Model Sonnet 5.5, Effort High, Agent Default. Effort → Medium ajan tarafından onaylandı (çip yalnız onaydan sonra değişti, hata yok).
+  - Antigravity: Mode, Model (Gemini 4 Argon), Thinking Level. Mode Default → Plan onaylandı.
+  - OpenCode: "Session Mode" (Build/Plan) ve Model. Session Mode Build → Plan onaylandı.
+- Claude adaptörü başlarken ayrıntılı günlük satırlarını stderr'e yazıyor; sunucu bunu kendi stderr'ine aktarıyor (gürültülü ama zararsız).
+- **Doğrulanmadı:** hiçbir ajanla gerçek bir tur (prompt) çalıştırılmadı; bu model kotası harcar ve açık onay gerektirir. Giriş yapılmamış bir ajanın `auth_required` yolu yalnızca sahte ajanla sınandı.
