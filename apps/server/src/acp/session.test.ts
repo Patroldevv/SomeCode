@@ -321,4 +321,54 @@ describe('AcpSession', () => {
     await session.setConfig('model', 'smart');
     expect(events.at(-1)).toEqual(CONFIG('smart'));
   });
+
+  it('(h) modes_only: synthesizes a mode option and switches it with session/set_mode', async () => {
+    const { session, events } = await start('modes_only');
+    const first = events.find((e) => e.type === 'config_options');
+    expect(first).toEqual({
+      type: 'config_options',
+      options: [
+        {
+          id: 'mode',
+          name: 'Mode',
+          category: 'mode',
+          currentValue: 'default',
+          choices: [
+            { value: 'default', name: 'Default', description: 'Ask before changes' },
+            { value: 'plan', name: 'Plan' },
+          ],
+        },
+      ],
+    });
+    const before = events.length;
+    await session.setConfig('mode', 'plan');
+    const updates = events.slice(before).filter((e) => e.type === 'config_options');
+    expect(updates.at(-1)).toMatchObject({ options: [{ id: 'mode', currentValue: 'plan' }] });
+  });
+
+  it('(i) setConfig: an agent rejection becomes bad_request and emits nothing', async () => {
+    const { session, events } = await start('basic');
+    const before = events.length;
+    await expect(session.setConfig('no-such-option', 'x')).rejects.toMatchObject({ code: 'bad_request' });
+    expect(events.length).toBe(before);
+  });
+
+  it('(j) setConfig is refused while a turn runs and after the agent is gone', async () => {
+    const { session, events } = await start('slow');
+    void session.prompt('go').catch(() => {});
+    await waitForEvent(events, 'agent_thought');
+    await expect(session.setConfig('model', 'smart')).rejects.toMatchObject({ code: 'turn_in_progress' });
+    await session.close();
+    await expect(session.setConfig('model', 'smart')).rejects.toMatchObject({ code: 'disconnected' });
+  });
+
+  it('(k) a start that never completes times out as disconnected and leaves no process', async () => {
+    const events: NormalizedEvent[] = [];
+    const t0 = Date.now();
+    await expect(
+      AcpSession.start({ driver: fakeDriver('slow_start'), cwd: process.cwd(), onEvent: (e) => events.push(e), timeoutMs: 300 }),
+    ).rejects.toMatchObject({ code: 'disconnected', message: expect.stringContaining('did not start in time') });
+    expect(Date.now() - t0).toBeLessThan(3000);
+    expect(events).toEqual([{ type: 'status', status: 'disconnected', reason: 'start_timeout' }]);
+  });
 });

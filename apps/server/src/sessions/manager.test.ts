@@ -329,6 +329,23 @@ describe('cancel, respondPermission, setConfig', () => {
   });
 });
 
+describe('setConfig failures', () => {
+  it('refuses while a turn runs, rejects unknown options and journals nothing for either', async () => {
+    setup(fakeDriver('slow'));
+    const { id } = await manager.createSession(projectId, 'fake');
+    manager.prompt(id, 'go');
+    await waitForType(id, 'agent_thought');
+    const last = store.lastSeq(id);
+    expect((await rejection(manager.setConfig(id, 'model', 'smart'))).code).toBe('turn_in_progress');
+    await manager.cancel(id);
+    await waitForStatus(id, 'ready', 2);
+    const before = store.lastSeq(id);
+    expect((await rejection(manager.setConfig(id, 'no-such-option', 'x'))).code).toBe('bad_request');
+    expect(store.lastSeq(id)).toBe(before);
+    expect(before).toBeGreaterThan(last - 1);
+  });
+});
+
 describe('subscribe', () => {
   it('replays history then delivers live events, without duplicates, even when one arrives mid-replay', async () => {
     setup(fakeDriver('basic'));

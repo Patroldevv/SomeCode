@@ -23,6 +23,7 @@ const PERMISSION_OPTIONS = [
 ] as const;
 
 let model = 'fast';
+let mode = 'default';
 let activeTurn: AbortController | null = null;
 
 function configOptions(): SessionConfigOption[] {
@@ -266,10 +267,29 @@ const connection = agent({ name: 'fake' })
     if (scenario === 'slow_start') await sleep(30_000); // never finishes starting in a test
     return { protocolVersion: PROTOCOL_VERSION, agentCapabilities: {}, authMethods: [] };
   })
-  .onRequest(methods.agent.session.new, () => ({
-    sessionId: SESSION_ID,
-    configOptions: configOptions(),
-  }))
+  .onRequest(methods.agent.session.new, () =>
+    scenario === 'modes_only'
+      ? {
+          // An agent that only reports `modes` (no configOptions).
+          sessionId: SESSION_ID,
+          modes: {
+            currentModeId: mode,
+            availableModes: [
+              { id: 'default', name: 'Default', description: 'Ask before changes' },
+              { id: 'plan', name: 'Plan' },
+            ],
+          },
+        }
+      : { sessionId: SESSION_ID, configOptions: configOptions() },
+  )
+  .onRequest(methods.agent.session.setMode, async ({ params, client }) => {
+    mode = params.modeId;
+    await client.notify(methods.client.session.update, {
+      sessionId: SESSION_ID,
+      update: { sessionUpdate: 'current_mode_update', currentModeId: mode },
+    });
+    return {};
+  })
   .onRequest(methods.agent.session.setConfigOption, ({ params }) => {
     if (params.configId !== 'model' || typeof params.value !== 'string') {
       throw RequestError.invalidParams(undefined, `unknown config ${params.configId}`);

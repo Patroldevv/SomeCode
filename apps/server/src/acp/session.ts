@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs';
 import { Readable, Writable } from 'node:stream';
 import { client, methods, ndJsonStream, PROTOCOL_VERSION, RequestError } from '@agentclientprotocol/sdk';
 import type { ClientConnection, StopReason } from '@agentclientprotocol/sdk';
-import { SomeCodeError, type ErrorCode, type NormalizedEvent } from '@somecode/protocol';
+import { SomeCodeError, type ConfigOption, type ErrorCode, type NormalizedEvent } from '@somecode/protocol';
 import type { AgentDriver } from '../agents/types.ts';
 import { PermissionBroker } from '../permissions/broker.ts';
 import { normalizeConfigOptions, normalizePermission, normalizeUpdate } from './normalize.ts';
@@ -17,12 +17,37 @@ type StartOptions = {
   onEvent: (e: NormalizedEvent) => void;
   /** Aborting it while the agent is still starting stops the agent and rejects as `disconnected`. */
   signal?: AbortSignal;
+  /** Budget for `initialize` + `session/new`; default `SOMECODE_AGENT_START_TIMEOUT_MS` or 30 s. */
+  timeoutMs?: number;
 };
 type State = 'starting' | 'ready' | 'running' | 'disconnected';
 
 /** JSON-RPC error codes from the agent that map to a specific SomeCode error. */
 const RPC_ERROR_CODES: Record<number, ErrorCode> = { [-32000]: 'auth_required', [-32602]: 'bad_request' };
 const KILL_GRACE_MS = 2000;
+const DEFAULT_START_TIMEOUT_MS = 30_000;
+
+function startTimeoutMs(opts: StartOptions): number {
+  const fromEnv = Number(process.env.SOMECODE_AGENT_START_TIMEOUT_MS);
+  return opts.timeoutMs ?? (Number.isFinite(fromEnv) && fromEnv > 0 ? fromEnv : DEFAULT_START_TIMEOUT_MS);
+}
+
+type ModeState = { currentModeId: string; availableModes: Array<{ id: string; name: string; description?: string | null }> };
+
+/** An agent that only reports `modes` gets a synthesized `mode` option so the UI can treat it like any other. */
+function modeOption(modes: ModeState): ConfigOption {
+  return {
+    id: 'mode',
+    name: 'Mode',
+    category: 'mode',
+    currentValue: modes.currentModeId,
+    choices: modes.availableModes.map((m) => ({
+      value: m.id,
+      name: m.name,
+      ...(m.description ? { description: m.description } : {}),
+    })),
+  };
+}
 
 function toSomeCodeError(err: unknown, what: string): SomeCodeError {
   if (err instanceof SomeCodeError) return err;
@@ -52,6 +77,9 @@ export class AcpSession {
   #sessionId = '';
   #state: State = 'starting';
   #stopReason: string | null = null;
+  /** The options the agent reported, and the synthesized `mode` option when it only reports `modes`. */
+  #agentOptions: ConfigOption[] = [];
+  #modeFromModes: ConfigOption | null = null;
 
   static async start(opts: StartOptions): Promise<AcpSession> {
     const launch = opts.driver.launch();
@@ -67,16 +95,24 @@ export class AcpSession {
     // Aborting the start (server shutdown) stops the agent, so the handshake fails as disconnected.
     const abort = () => session.#kill('closed');
     opts.signal?.addEventListener('abort', abort, { once: true });
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      session.#kill('start_timeout');
+    }, startTimeoutMs(opts));
     try {
       if (opts.signal?.aborted) abort();
       await session.#open(opts.cwd);
     } catch (err) {
-      const error = session.#conn.signal.aborted
-        ? new SomeCodeError('disconnected', `agent exited during startup: ${String(err)}`)
-        : toSomeCodeError(err, 'agent startup failed');
+      const error = timedOut
+        ? new SomeCodeError('disconnected', 'agent did not start in time')
+        : session.#conn.signal.aborted
+          ? new SomeCodeError('disconnected', `agent exited during startup: ${String(err)}`)
+          : toSomeCodeError(err, 'agent startup failed');
       await session.#shutdown(error.code === 'auth_required' ? 'auth_required' : 'startup_failed');
       throw error;
     } finally {
+      clearTimeout(timer);
       opts.signal?.removeEventListener('abort', abort);
     }
     return session;
@@ -104,8 +140,14 @@ export class AcpSession {
       .onNotification(methods.client.session.update, ({ params }) => {
         const intercepted = unknownUpdates.take(params);
         if (params.sessionId !== this.#sessionId) return;
+        if (!intercepted && params.update.sessionUpdate === 'current_mode_update' && this.#modeFromModes) {
+          this.#modeFromModes = { ...this.#modeFromModes, currentValue: params.update.currentModeId };
+          this.#publishOptions(this.#agentOptions);
+          return;
+        }
         const event = intercepted ? { type: 'unsupported' as const, ...intercepted } : normalizeUpdate(params.update);
-        if (event) this.#emit(event);
+        if (event?.type === 'config_options') this.#publishOptions(event.options);
+        else if (event) this.#emit(event);
       })
       .onRequest(methods.client.session.requestPermission, async ({ params, signal }) => {
         const { requestId, decision } = this.#broker.request();
@@ -145,7 +187,10 @@ export class AcpSession {
     }
     const res = await this.#conn.agent.request(methods.agent.session.new, { cwd, mcpServers: [] });
     this.#sessionId = res.sessionId;
-    if (res.configOptions) this.#emit(normalizeConfigOptions(res.configOptions));
+    const reported = res.configOptions ? normalizeConfigOptions(res.configOptions).options : [];
+    const providesMode = reported.some((o) => o.id === 'mode' || o.category === 'mode');
+    this.#modeFromModes = res.modes && !providesMode ? modeOption(res.modes) : null;
+    if (reported.length > 0 || this.#modeFromModes) this.#publishOptions(reported);
     this.#state = 'ready';
     this.#emit({ type: 'status', status: 'ready' });
   }
@@ -197,15 +242,30 @@ export class AcpSession {
       .catch(() => {}); // a closed connection is reported through the disconnect path
   }
 
+  /** Emits the agent's options (plus the synthesized mode option, if any) as one `config_options` event. */
+  #publishOptions(list: ConfigOption[]): void {
+    this.#agentOptions = list;
+    const options = this.#modeFromModes ? [...list, this.#modeFromModes] : list;
+    this.#emit({ type: 'config_options', options });
+  }
+
   async setConfig(configId: string, value: string): Promise<void> {
     this.#assertConnected();
+    if (this.#state === 'running') throw new SomeCodeError('turn_in_progress', 'cannot change options while a turn runs');
     try {
+      if (configId === 'mode' && this.#modeFromModes) {
+        await this.#conn.agent.request(methods.agent.session.setMode, { sessionId: this.#sessionId, modeId: value });
+        // The agent may also announce `current_mode_update`; publishing twice is harmless.
+        if (this.#modeFromModes) this.#modeFromModes = { ...this.#modeFromModes, currentValue: value };
+        this.#publishOptions(this.#agentOptions);
+        return;
+      }
       const res = await this.#conn.agent.request(methods.agent.session.setConfigOption, {
         sessionId: this.#sessionId,
         configId,
         value,
       });
-      this.#emit(normalizeConfigOptions(res.configOptions));
+      this.#publishOptions(normalizeConfigOptions(res.configOptions).options);
     } catch (err) {
       throw this.#failure(err, `set_config_option ${configId} failed`);
     }
