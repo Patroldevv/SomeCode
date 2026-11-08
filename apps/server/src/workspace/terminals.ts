@@ -1,8 +1,21 @@
 import { randomUUID } from 'node:crypto';
 import { isAbsolute } from 'node:path';
 import { readdirSync, readFileSync } from 'node:fs';
-import { spawn, type IPty } from 'node-pty';
+import { createRequire } from 'node:module';
+import type { IPty } from 'node-pty';
 import { SomeCodeError } from '@somecode/protocol';
+
+/**
+ * node-pty is a native module; on a computer where it cannot be loaded (a system library that is too old) only
+ * the terminal is unavailable, not the whole app, so it is loaded on first use.
+ */
+function loadPty(): typeof import('node-pty') {
+  try {
+    return createRequire(import.meta.url)('node-pty') as typeof import('node-pty');
+  } catch {
+    throw new SomeCodeError('internal', 'the terminal is not available on this computer');
+  }
+}
 
 type Terminal = { pty: IPty; output: string; cursor: number; exited: boolean; exitCode: number | null; lastUsed: number; cleanup?: Promise<void> };
 type TerminalOptions = { maxTerminals?: number; maxOutputChars?: number; idleTimeoutMs?: number };
@@ -38,8 +51,11 @@ export class TerminalService {
     const command = options.command ?? (shell && isAbsolute(shell) ? shell : '/bin/sh');
     let pty: IPty;
     try {
-      pty = spawn(command, options.args ?? [], { name: 'xterm-256color', cols: 80, rows: 24, cwd: options.cwd, env: { ...process.env, TERM: 'xterm-256color' } });
-    } catch { throw new SomeCodeError('bad_request', 'terminal process could not be started'); }
+      pty = loadPty().spawn(command, options.args ?? [], { name: 'xterm-256color', cols: 80, rows: 24, cwd: options.cwd, env: { ...process.env, TERM: 'xterm-256color' } });
+    } catch (err) {
+      if (err instanceof SomeCodeError) throw err;
+      throw new SomeCodeError('bad_request', 'terminal process could not be started');
+    }
     const id = randomUUID();
     const terminal: Terminal = { pty, output: '', cursor: 0, exited: false, exitCode: null, lastUsed: Date.now() };
     this.terminals.set(id, terminal);

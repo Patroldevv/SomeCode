@@ -43,7 +43,36 @@ fi
 
 [ "$(uname -s)" = "Linux" ] || die "this installer is for Linux (got $(uname -s))"
 case "$(uname -m)" in x86_64|amd64) arch=x64 ;; *) die "only x86_64 builds are published for now (got $(uname -m))" ;; esac
-need curl; need tar; need sha256sum
+need curl
+
+# Installs system packages through whichever package manager there is (with sudo when not root). Best effort.
+as_root() { if [ "$(id -u)" -eq 0 ]; then "$@"; elif command -v sudo >/dev/null 2>&1; then sudo "$@"; else return 1; fi; }
+pkg_install() {   # names: tar xz xdg desktop-utils build
+  local pk=""; for what in "$@"; do
+    if command -v apt-get >/dev/null 2>&1; then
+      case "$what" in tar) pk="$pk tar";; xz) pk="$pk xz-utils";; xdg) pk="$pk xdg-utils";; desktop-utils) pk="$pk desktop-file-utils";; build) pk="$pk build-essential python3";; esac
+    elif command -v dnf >/dev/null 2>&1 || command -v yum >/dev/null 2>&1; then
+      case "$what" in tar) pk="$pk tar";; xz) pk="$pk xz";; xdg) pk="$pk xdg-utils";; desktop-utils) pk="$pk desktop-file-utils";; build) pk="$pk gcc-c++ make python3";; esac
+    elif command -v pacman >/dev/null 2>&1; then
+      case "$what" in tar) pk="$pk tar";; xz) pk="$pk xz";; xdg) pk="$pk xdg-utils";; desktop-utils) pk="$pk desktop-file-utils";; build) pk="$pk base-devel python";; esac
+    elif command -v zypper >/dev/null 2>&1; then
+      case "$what" in tar) pk="$pk tar";; xz) pk="$pk xz";; xdg) pk="$pk xdg-utils";; desktop-utils) pk="$pk update-desktop-files";; build) pk="$pk gcc-c++ make python3";; esac
+    fi
+  done
+  [ -n "$pk" ] || return 1
+  say "Installing missing packages:$pk"
+  if command -v apt-get >/dev/null 2>&1; then as_root apt-get install -y $pk
+  elif command -v dnf >/dev/null 2>&1; then as_root dnf install -y $pk
+  elif command -v yum >/dev/null 2>&1; then as_root yum install -y $pk
+  elif command -v pacman >/dev/null 2>&1; then as_root pacman -S --needed --noconfirm $pk
+  elif command -v zypper >/dev/null 2>&1; then as_root zypper --non-interactive install $pk; fi
+}
+
+command -v tar >/dev/null 2>&1 || pkg_install tar || die "'tar' is required"
+command -v sha256sum >/dev/null 2>&1 || die "'sha256sum' (coreutils) is required"
+# What the app uses to open its window and to show up in the application menu (optional, best effort).
+command -v xdg-open >/dev/null 2>&1 || pkg_install xdg >/dev/null 2>&1 || true
+command -v update-desktop-database >/dev/null 2>&1 || pkg_install desktop-utils >/dev/null 2>&1 || true
 
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 asset="somecode-linux-$arch.tar.gz"
@@ -69,6 +98,7 @@ rm -rf "$home_dir.new"; mkdir -p "$home_dir.new"
 tar -xzf "$tmp/$asset" -C "$home_dir.new" --strip-components=1
 
 if [ -z "$node_bin" ]; then
+  command -v xz >/dev/null 2>&1 || pkg_install xz || die "'xz' is required to unpack Node"
   say "Node $NODE_MAJOR+ not found, fetching it (official build from nodejs.org)"
   idx="$(curl -fsSL https://nodejs.org/dist/index.json)" || die "could not reach nodejs.org"
   nv="$(printf '%s' "$idx" | tr '{' '\n' | grep -o "\"version\":\"v$NODE_MAJOR\.[0-9.]*\"" | head -1 | cut -d'"' -f4)"
@@ -82,6 +112,17 @@ if [ -z "$node_bin" ]; then
 fi
 
 rm -rf "$home_dir"; mv "$home_dir.new" "$home_dir"
+
+# The terminal panel uses a native module built on a recent system. If it does not load here, build it for this computer.
+if ! "$node_bin" -e "require('$home_dir/node_modules/node-pty')" >/dev/null 2>&1; then
+  say "Preparing the terminal for this system"
+  pty_ok=0
+  if PATH="$(dirname "$node_bin"):$PATH" command -v npm >/dev/null 2>&1; then
+    command -v g++ >/dev/null 2>&1 && command -v make >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1 || pkg_install build || true
+    if (cd "$home_dir" && PATH="$(dirname "$node_bin"):$PATH" npm rebuild node-pty --foreground-scripts >/dev/null 2>&1) && "$node_bin" -e "require('$home_dir/node_modules/node-pty')" >/dev/null 2>&1; then pty_ok=1; fi
+  fi
+  [ "$pty_ok" -eq 1 ] || echo "    Note: the built-in terminal could not be prepared on this system; everything else works."
+fi
 mkdir -p "$bin_dir"
 cat > "$bin_dir/somecode" <<LAUNCH
 #!/bin/sh
