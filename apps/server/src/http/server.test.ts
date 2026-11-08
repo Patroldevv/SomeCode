@@ -310,6 +310,37 @@ describe('REST (b)', () => {
   });
 });
 
+describe('agent status fields', () => {
+  it('exposes only whitelisted status fields (auth state and hints), never other detect() output', async () => {
+    const leaky = {
+      ...fakeDriver('basic', 'leaky'),
+      detect: async () => ({
+        installed: true,
+        version: '9',
+        auth: 'signed_out',
+        signInHint: 'tool login',
+        installHint: 'npm i -g tool',
+        email: 'someone@example.com',
+        orgName: 'Acme',
+      }),
+    } as unknown as AgentDriver;
+    await start([leaky]);
+    const res = await api('/api/agents');
+    expect(res.body).toEqual([
+      {
+        id: 'leaky',
+        label: 'Fake agent',
+        installed: true,
+        version: '9',
+        auth: 'signed_out',
+        signInHint: 'tool login',
+        installHint: 'npm i -g tool',
+      },
+    ]);
+    expect(JSON.stringify(res.body)).not.toContain('someone@example.com');
+  });
+});
+
 describe('WebSocket sessions', () => {
   it('(c) subscribes, then streams a prompt turn in seq order up to turn_end', async () => {
     await start();

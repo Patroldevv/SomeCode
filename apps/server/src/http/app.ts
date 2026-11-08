@@ -6,7 +6,6 @@ import { bodyLimit } from 'hono/body-limit';
 import { z } from 'zod';
 import { SomeCodeError } from '@somecode/protocol';
 import type { AgentRegistry } from '../agents/registry.ts';
-import type { AgentStatus } from '../agents/types.ts';
 import type { SessionManager } from '../sessions/manager.ts';
 import type { Store } from '../store/store.ts';
 import { bearerToken, originAllowed, tokenMatches } from './auth.ts';
@@ -77,24 +76,17 @@ function parseAfterSeq(value: string | undefined): number {
   return n;
 }
 
-/** One driver failing to detect must not fail the whole listing. */
+/** Whitelisted fields only: whatever else a driver's detect() returns never reaches the client. */
 async function agentStatuses(registry: AgentRegistry) {
-  return Promise.all(
-    registry.list().map(async (driver) => {
-      let status: AgentStatus;
-      try {
-        status = await driver.detect();
-      } catch {
-        status = { installed: false };
-      }
-      return {
-        id: driver.id,
-        label: driver.label,
-        installed: status.installed === true,
-        ...(status.version !== undefined ? { version: status.version } : {}),
-      };
-    }),
-  );
+  return (await registry.statuses()).map((s) => ({
+    id: s.id,
+    label: s.label,
+    installed: s.installed === true,
+    ...(s.version !== undefined ? { version: s.version } : {}),
+    ...(s.auth !== undefined ? { auth: s.auth } : {}),
+    ...(s.signInHint !== undefined ? { signInHint: s.signInHint } : {}),
+    ...(s.installHint !== undefined ? { installHint: s.installHint } : {}),
+  }));
 }
 
 function contains(root: string, path: string): boolean {

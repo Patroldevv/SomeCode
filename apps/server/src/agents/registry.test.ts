@@ -40,17 +40,17 @@ describe('openCodeDriver', () => {
 
   it('detects the installed version from --version output', async () => {
     const driver = createOpenCodeDriver({ PATH: binDirWith('echo "1.2.3"') });
-    expect(await driver.detect()).toEqual({ installed: true, version: '1.2.3' });
+    expect(await driver.detect()).toEqual({ installed: true, version: '1.2.3', auth: 'unknown', signInHint: 'opencode acp --login' });
   });
 
   it('uses the first non-empty line of output as the version', async () => {
     const driver = createOpenCodeDriver({ PATH: binDirWith('printf "\\n  v2.0.1  \\nextra\\n"') });
-    expect(await driver.detect()).toEqual({ installed: true, version: 'v2.0.1' });
+    expect(await driver.detect()).toEqual({ installed: true, version: 'v2.0.1', auth: 'unknown', signInHint: 'opencode acp --login' });
   });
 
   it('reports installed without a version when output is empty', async () => {
     const driver = createOpenCodeDriver({ PATH: binDirWith('exit 0') });
-    expect(await driver.detect()).toEqual({ installed: true });
+    expect(await driver.detect()).toEqual({ installed: true, auth: 'unknown', signInHint: 'opencode acp --login' });
   });
 
   it('reports not installed when the command exits non-zero', async () => {
@@ -88,5 +88,16 @@ describe('createRegistry', () => {
 
   it('throws on duplicate driver ids', () => {
     expect(() => createRegistry([stubDriver('a', true), stubDriver('a', false)])).toThrow(/duplicate/i);
+  });
+});
+
+describe('registry statuses resilience', () => {
+  it('returns every driver even when one detect() rejects', async () => {
+    const bad: AgentDriver = { ...stubDriver('bad', true), detect: async () => Promise.reject(new Error('boom')) };
+    const registry = createRegistry([stubDriver('a', true, '1'), bad]);
+    expect(await registry.statuses()).toEqual([
+      { id: 'a', label: 'A', installed: true, version: '1' },
+      { id: 'bad', label: 'BAD', installed: false },
+    ]);
   });
 });
