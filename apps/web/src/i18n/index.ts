@@ -5,7 +5,33 @@ export type { MessageKey };
 
 export type MessageParams = Record<string, string | number>;
 
-let override: string | null = null;
+export type LanguagePreference = 'auto' | 'tr' | 'en';
+const LANGUAGE_KEY = 'somecode.language';
+
+function storedPreference(): LanguagePreference {
+  try {
+    const value = globalThis.localStorage?.getItem(LANGUAGE_KEY);
+    return value === 'tr' || value === 'en' ? value : 'auto';
+  } catch {
+    return 'auto';
+  }
+}
+
+/** The language the user chose in Settings; `null` follows the browser. */
+let override: string | null = storedPreference() === 'auto' ? null : storedPreference();
+
+/** What the user picked in Settings (`auto` = the browser's language). */
+export function getLanguagePreference(): LanguagePreference {
+  return storedPreference();
+}
+
+/** Saves the choice; the UI picks it up on the next load (the caller reloads the page). */
+export function setLanguagePreference(pref: LanguagePreference): void {
+  try {
+    if (pref === 'auto') globalThis.localStorage?.removeItem(LANGUAGE_KEY);
+    else globalThis.localStorage?.setItem(LANGUAGE_KEY, pref);
+  } catch {}
+}
 
 const language = (): string => override ?? globalThis.navigator?.language ?? 'en';
 

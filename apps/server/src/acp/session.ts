@@ -2,11 +2,11 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { Readable, Writable } from 'node:stream';
 import { client, methods, ndJsonStream, PROTOCOL_VERSION, RequestError } from '@agentclientprotocol/sdk';
-import type { ClientConnection, StopReason } from '@agentclientprotocol/sdk';
-import { SomeCodeError, type ConfigOption, type ErrorCode, type NormalizedEvent } from '@somecode/protocol';
+import type { ClientConnection, RequestPermissionRequest, StopReason } from '@agentclientprotocol/sdk';
+import { SomeCodeError, type ConfigOption, type ErrorCode, type FormAnswer, type FormField, type ImageAttachment, type NormalizedEvent } from '@somecode/protocol';
 import type { AgentDriver } from '../agents/types.ts';
 import { PermissionBroker } from '../permissions/broker.ts';
-import { normalizeConfigOptions, normalizePermission, normalizeUpdate } from './normalize.ts';
+import { normalizeConfigOptions, normalizeForm, normalizePermission, normalizeUpdate, sanitizeAnswer, subagentOf } from './normalize.ts';
 import { jsonLines, UnknownUpdates } from './stdio.ts';
 
 export type { StopReason };
@@ -19,6 +19,12 @@ type StartOptions = {
   signal?: AbortSignal;
   /** Budget for `initialize` + `session/new`; default `SOMECODE_AGENT_START_TIMEOUT_MS` or 30 s. */
   timeoutMs?: number;
+  /** Restore this durable session; never fall back to session/new. */
+  acpSessionId?: string;
+  /** Told about each rate-limit report the agent forwards (Claude's `_claude/rateLimit`), as the agent sent it. */
+  onRateLimit?: (info: unknown) => void;
+  /** The option to pick for a permission request without asking the user, or null to ask (see `planModeApproval`). */
+  autoApprove?: (mode: string | null, req: RequestPermissionRequest) => string | null;
 };
 type State = 'starting' | 'ready' | 'running' | 'disconnected';
 
@@ -75,19 +81,29 @@ function spawned(child: ChildProcess, command: string): Promise<void> {
 
 /** One ACP agent process and the single ACP session it hosts. */
 export class AcpSession {
+  readonly #driverId: string;
   readonly #child: ChildProcess;
   readonly #conn: ClientConnection;
   readonly #emit: (e: NormalizedEvent) => void;
   readonly #broker = new PermissionBroker();
   readonly #pendingPermissions = new Set<string>();
+  /** Open questions (form requests) by request id: what each one asks, and the validated answer once given. */
+  readonly #forms = new Map<string, FormField[]>();
+  readonly #answers = new Map<string, FormAnswer>();
   readonly #exited: Promise<void>;
   #sessionId = '';
+  #loading = false;
   #state: State = 'starting';
   #stopReason: string | null = null;
   /** The options the agent reported, and the synthesized `mode` option when it only reports `modes`. */
   #agentOptions: ConfigOption[] = [];
   #modeFromModes: ConfigOption | null = null;
   #info: AgentInfo = { authMethods: [], loadSession: false };
+  #autoApprove: StartOptions['autoApprove'];
+  #onRateLimit: StartOptions['onRateLimit'];
+  /** The latest context-window figures, and what was last announced (so a turn only reports a change). */
+  #usage: { used: number; size: number } | null = null;
+  #usageSent: { used: number; size: number } | null = null;
 
   static async start(opts: StartOptions): Promise<AcpSession> {
     const launch = opts.driver.launch();
@@ -100,6 +116,8 @@ export class AcpSession {
     });
     await spawned(child, launch.command);
     const session = new AcpSession(child, opts.driver.id, opts.onEvent);
+    session.#autoApprove = opts.autoApprove;
+    session.#onRateLimit = opts.onRateLimit;
     // Aborting the start (server shutdown) stops the agent, so the handshake fails as disconnected.
     const abort = () => session.#kill('closed');
     opts.signal?.addEventListener('abort', abort, { once: true });
@@ -110,7 +128,7 @@ export class AcpSession {
     }, startTimeoutMs(opts));
     try {
       if (opts.signal?.aborted) abort();
-      await session.#open(opts.cwd);
+      await session.#open(opts.cwd, opts.acpSessionId);
     } catch (err) {
       const error = timedOut
         ? new SomeCodeError('disconnected', 'agent did not start in time')
@@ -127,6 +145,7 @@ export class AcpSession {
   }
 
   private constructor(child: ChildProcess, label: string, onEvent: (e: NormalizedEvent) => void) {
+    this.#driverId = label;
     this.#child = child;
     this.#emit = onEvent;
     // Errors after spawn (EPIPE on a dead agent's stdin, kill failures) surface via exit/close.
@@ -147,7 +166,23 @@ export class AcpSession {
     this.#conn = client({ name: 'somecode' })
       .onNotification(methods.client.session.update, ({ params }) => {
         const intercepted = unknownUpdates.take(params);
-        if (params.sessionId !== this.#sessionId) return;
+        if (params.sessionId !== this.#sessionId) {
+          const isChild = subagentOf(params.update) !== undefined;
+          if (!isChild) return;
+        }
+        // session/load replays the agent's transcript. Our journal already owns that history.
+        if (this.#loading) return;
+        // The manager journals every prompt itself before the turn starts. Some agents also echo the prompt back as
+        // a user_message_chunk during the turn, which would show the message twice.
+        if (!intercepted && params.update.sessionUpdate === 'user_message_chunk') return;
+        if (!intercepted && params.update.sessionUpdate === 'usage_update') {
+          this.#noteUsage(params.update);
+          return;
+        }
+        // A sub-agent's own chatter (messages, thoughts) is not part of this conversation: only its tool calls are
+        // kept, tagged with the sub-agent that made them.
+        const updateKind = params.update.sessionUpdate;
+        if (!intercepted && updateKind !== 'tool_call' && updateKind !== 'tool_call_update' && subagentOf(params.update)) return;
         if (!intercepted && params.update.sessionUpdate === 'current_mode_update') {
           const next = params.update.currentModeId;
           if (this.#modeFromModes) {
@@ -164,6 +199,9 @@ export class AcpSession {
         else if (event) this.#emit(event);
       })
       .onRequest(methods.client.session.requestPermission, async ({ params, signal }) => {
+        if (this.#loading) return { outcome: { outcome: 'cancelled' as const } };
+        const auto = this.#autoApprove?.(this.#currentMode(), params);
+        if (auto) return { outcome: { outcome: 'selected' as const, optionId: auto } };
         const { requestId, decision } = this.#broker.request();
         this.#pendingPermissions.add(requestId);
         this.#emit(normalizePermission(requestId, params));
@@ -175,6 +213,32 @@ export class AcpSession {
         return optionId === null
           ? { outcome: { outcome: 'cancelled' as const } }
           : { outcome: { outcome: 'selected' as const, optionId } };
+      })
+      .onRequest(methods.client.elicitation.create, async ({ params, signal }) => {
+        if (this.#loading || params.mode !== 'form') return { action: 'decline' as const };
+        const scoped = params as { sessionId?: string; toolCallId?: string };
+        if (scoped.sessionId !== undefined && scoped.sessionId !== this.#sessionId) return { action: 'decline' as const };
+        const fields = normalizeForm((params as { requestedSchema?: unknown }).requestedSchema);
+        if (!fields) return { action: 'decline' as const };
+        const { requestId, decision } = this.#broker.request();
+        this.#pendingPermissions.add(requestId);
+        this.#forms.set(requestId, fields);
+        this.#emit({
+          type: 'permission_request',
+          requestId,
+          toolCallId: scoped.toolCallId ?? requestId,
+          title: params.message,
+          options: [{ id: 'submit', name: 'Submit', kind: 'allow_once' }],
+          form: { fields },
+        });
+        const withdraw = () => this.respondPermission(requestId, null);
+        if (signal.aborted) withdraw();
+        else signal.addEventListener('abort', withdraw, { once: true });
+        const optionId = await decision;
+        const answer = this.#answers.get(requestId);
+        this.#forms.delete(requestId);
+        this.#answers.delete(requestId);
+        return optionId === null ? { action: 'cancel' as const } : { action: 'accept' as const, content: answer ?? {} };
       })
       .connect(ndJsonStream(output, input));
     // A dead connection makes the agent useless. Give it a moment to exit on its own (so a
@@ -194,10 +258,11 @@ export class AcpSession {
     return this.#info;
   }
 
-  async #open(cwd: string): Promise<void> {
+  async #open(cwd: string, acpSessionId?: string): Promise<void> {
     const init = await this.#conn.agent.request(methods.agent.initialize, {
       protocolVersion: PROTOCOL_VERSION,
-      clientCapabilities: {},
+      // `elicitation.form`: the agent may ask the user questions (OpenCode's question tool, plan hand-offs).
+      clientCapabilities: { elicitation: { form: {} } },
       clientInfo: { name: 'somecode', version: '0.0.0' },
     });
     if (init.protocolVersion !== PROTOCOL_VERSION) {
@@ -210,17 +275,41 @@ export class AcpSession {
       authMethods: (init.authMethods ?? []).map((m) => ({ id: m.id, name: m.name })),
       loadSession: init.agentCapabilities?.loadSession === true,
     };
-    const res = await this.#conn.agent.request(methods.agent.session.new, { cwd, mcpServers: [] });
-    this.#sessionId = res.sessionId;
+    if (acpSessionId && !this.#info.loadSession) {
+      throw new SomeCodeError('bad_request', 'this agent does not support loading saved sessions');
+    }
+    this.#loading = acpSessionId !== undefined;
+    this.#sessionId = acpSessionId ?? '';
+    const res = acpSessionId
+      ? await this.#conn.agent.request(methods.agent.session.load, { cwd, mcpServers: [], sessionId: acpSessionId })
+      : await this.#conn.agent.request(methods.agent.session.new, { cwd, mcpServers: [] });
+    if ('sessionId' in res && typeof res.sessionId === 'string') this.#sessionId = res.sessionId;
+    // Drain notification handlers scheduled before the load response before accepting live updates.
+    if (this.#loading) await new Promise((resolve) => setImmediate(resolve));
+    this.#loading = false;
     const reported = res.configOptions ? normalizeConfigOptions(res.configOptions).options : [];
     const providesMode = reported.some((o) => o.id === 'mode' || o.category === 'mode');
     this.#modeFromModes = res.modes && !providesMode ? modeOption(res.modes) : null;
+    const providesEffort = reported.some((o) => o.category === 'thought_level' || o.id === 'thought_level' || o.id === 'effort');
+    if (!providesEffort && this.#driverId === 'opencode') {
+      reported.push({
+        id: 'thought_level',
+        name: 'Effort',
+        category: 'thought_level',
+        currentValue: 'medium',
+        choices: [
+          { value: 'low', name: 'Low' },
+          { value: 'medium', name: 'Medium' },
+          { value: 'high', name: 'High' },
+        ],
+      });
+    }
     if (reported.length > 0 || this.#modeFromModes) this.#publishOptions(reported);
     this.#state = 'ready';
     this.#emit({ type: 'status', status: 'ready' });
   }
 
-  async prompt(text: string): Promise<StopReason> {
+  async prompt(text: string, images?: ImageAttachment[], preamble?: string): Promise<StopReason> {
     this.#assertConnected();
     if (this.#state === 'running') throw new SomeCodeError('turn_in_progress', 'a prompt turn is already running');
     this.#state = 'running';
@@ -230,11 +319,35 @@ export class AcpSession {
     // received before the response (or error) is emitted before `turn_end`.
     const settle = () => new Promise((resolve) => setImmediate(resolve));
     try {
-      const { stopReason } = await this.#conn.agent.request(methods.agent.session.prompt, {
+      const promptBlocks: Array<{ type: string; text?: string; data?: string; mimeType?: string }> = [];
+      if (preamble) promptBlocks.push({ type: 'text', text: preamble });
+      if (images && images.length > 0) {
+        for (const img of images) {
+          promptBlocks.push({
+            type: 'image',
+            data: img.data,
+            mimeType: img.mimeType,
+          });
+        }
+      }
+      let promptText = text;
+      if (this.#driverId === 'opencode') {
+        const effort = this.#agentOptions.find((o) => o.id === 'thought_level')?.currentValue;
+        if (effort && effort !== 'medium') {
+          promptText = `[Reasoning Effort: ${effort.toUpperCase()}]\n${promptText}`;
+        }
+      }
+      if (promptText || !promptBlocks.some((b) => b.type !== 'text' || b.text !== preamble)) {
+        promptBlocks.push({ type: 'text', text: promptText });
+      }
+
+      const response = (await this.#conn.agent.request(methods.agent.session.prompt, {
         sessionId: this.#sessionId,
-        prompt: [{ type: 'text', text }],
-      });
+        prompt: promptBlocks as unknown as Array<{ type: 'text'; text: string }>,
+      })) as { stopReason: StopReason };
+      const stopReason = response.stopReason;
       await settle();
+      this.#flushUsage();
       this.#emit({ type: 'turn_end', stopReason });
       return stopReason;
     } catch (err) {
@@ -267,6 +380,30 @@ export class AcpSession {
       .catch(() => {}); // a closed connection is reported through the disconnect path
   }
 
+  /** Remembers the context-window figures (announced when the turn ends) and forwards any rate-limit report. */
+  #noteUsage(update: { used?: unknown; size?: unknown; _meta?: unknown }): void {
+    if (typeof update.used === 'number' && typeof update.size === 'number' && update.size > 0) {
+      this.#usage = { used: update.used, size: update.size };
+    }
+    const meta = update._meta;
+    if (typeof meta === 'object' && meta !== null && '_claude/rateLimit' in meta) {
+      this.#onRateLimit?.((meta as Record<string, unknown>)['_claude/rateLimit']);
+    }
+  }
+
+  #flushUsage(): void {
+    const usage = this.#usage;
+    if (usage && (this.#usageSent?.used !== usage.used || this.#usageSent?.size !== usage.size)) {
+      this.#usageSent = usage;
+      this.#emit({ type: 'usage', used: usage.used, size: usage.size });
+    }
+  }
+
+  /** The session's current mode id, from whichever way the agent reports it. */
+  #currentMode(): string | null {
+    return (this.#modeFromModes ?? this.#agentOptions.find((o) => this.#isModeOption(o)))?.currentValue ?? null;
+  }
+
   #isModeOption(o: ConfigOption): boolean {
     return o.id === 'mode' || o.category === 'mode';
   }
@@ -282,6 +419,11 @@ export class AcpSession {
     this.#assertConnected();
     if (this.#state === 'running') throw new SomeCodeError('turn_in_progress', 'cannot change options while a turn runs');
     try {
+      if (configId === 'thought_level' && this.#driverId === 'opencode') {
+        this.#agentOptions = this.#agentOptions.map((o) => (o.id === 'thought_level' ? { ...o, currentValue: value } : o));
+        this.#publishOptions(this.#agentOptions);
+        return;
+      }
       if (configId === 'mode' && this.#modeFromModes) {
         await this.#conn.agent.request(methods.agent.session.setMode, { sessionId: this.#sessionId, modeId: value });
         // The agent may also announce `current_mode_update`; publishing twice is harmless.
@@ -301,12 +443,18 @@ export class AcpSession {
   }
 
   /** Settles a pending permission request; emits `permission_resolved` synchronously. */
-  respondPermission(requestId: string, optionId: string | null): boolean {
-    if (!this.#pendingPermissions.delete(requestId)) return false;
+  respondPermission(requestId: string, optionId: string | null, answer?: FormAnswer): boolean {
+    if (!this.#pendingPermissions.has(requestId)) return false;
+    // A question's answer is checked against what it asked before anything is settled; a bad one throws and the
+    // question stays open.
+    const fields = this.#forms.get(requestId);
+    const clean = fields && optionId !== null ? sanitizeAnswer(fields, answer ?? {}) : undefined;
+    this.#pendingPermissions.delete(requestId);
+    if (clean) this.#answers.set(requestId, clean);
     this.#emit(
       optionId === null
         ? { type: 'permission_resolved', requestId, outcome: 'cancelled' }
-        : { type: 'permission_resolved', requestId, outcome: 'selected', optionId },
+        : { type: 'permission_resolved', requestId, outcome: 'selected', optionId, ...(clean ? { answer: clean } : {}) },
     );
     return this.#broker.respond(requestId, optionId);
   }

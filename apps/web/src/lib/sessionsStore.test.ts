@@ -39,6 +39,42 @@ const msg = (seq: number, text: string, sessionId = 's1'): StoredEvent =>
   ev(seq, { type: 'agent_message', text }, sessionId);
 
 describe('createSessionsStore', () => {
+  it('keeps the older cursor at the durable seq when a confirmed prompt retains its optimistic key', () => {
+    const store = createSessionsStore({maxItems:2});
+    store.apply('s',ev(1,{type:'user_message',text:'one'},'s'));
+    store.apply('s',ev(2,{type:'agent_message',text:'reply'},'s'));
+    store.addLocalUser('s','two');
+    store.apply('s',ev(3,{type:'user_message',text:'two'},'s'));
+    store.apply('s',ev(4,{type:'agent_message',text:'later'},'s'));
+    expect(store.get('s').items.map((item)=>item.key)).toEqual(['local-1','4']);
+    expect(store.get('s').olderBeforeSeq).toBe(3);
+  });
+  it('does not duplicate an optimistic prompt already confirmed inside a snapshot', () => {
+    const store = createSessionsStore();
+    store.addLocalUser('s','hello');
+    store.setSnapshot('s',{state:{...store.get('s'),lastSeq:10,items:[{kind:'user',key:'7',text:'hello'}]},beforeSeq:null});
+    expect(store.get('s').items).toHaveLength(1);
+    expect(store.get('s').items[0]).toMatchObject({kind:'user',text:'hello'});
+  });
+  it('evicts inactive session states and rebuilds evicted sessions from seq zero', () => {
+    const store = createSessionsStore({maxSessions:2});
+    store.apply('a',msg(1,'a','a'));
+    store.apply('b',msg(1,'b','b'));
+    store.apply('c',msg(1,'c','c'));
+    expect(store.get('a').lastSeq).toBe(0);
+    expect(store.get('b').lastSeq).toBe(1);
+    expect(store.get('c').lastSeq).toBe(1);
+  });
+  it('bounds the recent window and exposes an older cursor without moving the live cursor backwards', () => {
+    const store = createSessionsStore({maxItems:2});
+    for (let n=1;n<=4;n++) store.apply('a',ev(n,{type:'user_message',text:String(n)},'a'));
+    expect(store.get('a').items.map((i)=>i.key)).toEqual(['3','4']);
+    expect(store.get('a').olderBeforeSeq).toBe(3);
+    store.setOlderHistory('a',{state:{...store.get('a'),items:[{kind:'user',key:'1',text:'one'},{kind:'user',key:'2',text:'two'}],lastSeq:2},beforeSeq:null});
+    expect(store.get('a').olderItems?.map((i)=>i.key)).toEqual(['1','2']);
+    expect(store.get('a').items.map((i)=>i.key)).toEqual(['3','4']);
+    expect(store.get('a').lastSeq).toBe(4);
+  });
   it('sessions are independent', () => {
     const store = createSessionsStore();
     store.apply('a', msg(1, 'hello', 'a'));

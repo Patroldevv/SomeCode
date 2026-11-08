@@ -1,6 +1,6 @@
 import type { ConfigOption } from '@somecode/protocol';
 
-const PRIMARY_ORDER = ['mode', 'model', 'thought_level'];
+const PRIMARY_ORDER = ['approval', 'mode', 'model', 'thought_level'];
 
 /** Options worth a chip: mode, model and effort first, then everything else in the agent's own order. */
 export function chipOrder(options: readonly ConfigOption[] | null | undefined): ConfigOption[] {
@@ -17,4 +17,22 @@ export function chipOrder(options: readonly ConfigOption[] | null | undefined): 
 export function chipLabel(option: ConfigOption): { name: string; value: string } {
   const current = option.choices.find((c) => c.value === option.currentValue);
   return { name: option.name, value: current?.name ?? option.currentValue };
+}
+
+const PRIMARY_IDS = new Set(['approval', 'mode', 'model', 'effort', 'thought_level', 'reasoning', 'thinking']);
+
+export function isEffortOption(o: ConfigOption): boolean {
+  if (o.category === 'thought_level' || o.category === 'effort' || o.category === 'reasoning') return true;
+  if (/^(thought_level|thought|effort|reasoning|thinking)$/i.test(o.id)) return true;
+  if (/^(thought|effort|reasoning|thinking|düşünce)/i.test(o.name)) return true;
+  return false;
+}
+
+export function isModelOption(o: ConfigOption): boolean {
+  return o.category === 'model' || /^model$/i.test(o.id) || /^model/i.test(o.name);
+}
+
+/** The pickers every chat needs: mode, model and effort (by category, or by the id agents commonly use). */
+export function isPrimaryOption(o: ConfigOption): boolean {
+  return (o.category !== undefined && PRIMARY_ORDER.includes(o.category)) || PRIMARY_IDS.has(o.id) || isEffortOption(o) || isModelOption(o);
 }

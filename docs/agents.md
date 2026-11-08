@@ -5,7 +5,7 @@ SomeCode ajanlarla **ACP (Agent Client Protocol)** üzerinden stdio ile konuşur
 | Ajan | Kimlik | Başlatma | Giriş durumu | Giriş komutu |
 |---|---|---|---|---|
 | Claude | `claude` | `node <apps/server bağımlılığı>/@agentclientprotocol/claude-agent-acp/dist/index.js` | `claude auth status --json` (`loggedIn`) | `claude auth login` |
-| OpenCode | `opencode` | `opencode acp` | bilinmiyor (ücretsiz modeller girişsiz çalışır) | `opencode acp --login` |
+| OpenCode | `opencode` | `opencode acp` | bilinmiyor (ücretsiz modeller girişsiz çalışır) | `opencode auth login` |
 | Antigravity | `agy` | `agy acp` | bilinmiyor (durum komutu yok); eksik giriş oturum başlarken `auth_required` olur | doğrulanmış bir komut yok; `agy`'yi terminalde bir kez açıp giriş yapın |
 
 Hiçbir ajan izin atlama bayrağıyla (`--dangerously-skip-permissions` vb.) başlatılmaz: onaylar kullanıcıya ulaşır.

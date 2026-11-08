@@ -588,4 +588,57 @@ describe('close()', () => {
     expect({ code, out }).toEqual({ code: 0, out: 'closed\n' });
     expect(err).toMatch(/^(\[somecode\] prompt failed for session [^\n]*: agent disconnected\n)?$/);
   }, 15_000);
+
+  it('reports the model options an agent offers before any session exists', async () => {
+    await start();
+    const ok = await api(`/api/agents/fake/options?path=${encodeURIComponent(dir)}`);
+    expect(ok.status).toBe(200);
+    expect(ok.body.options.map((o: { id: string }) => o.id)).toEqual(['model', 'approval']);
+    expect((await api('/api/agents/nope/options?path=' + encodeURIComponent(dir))).status).toBe(404);
+    expect((await api('/api/agents/fake/options?path=relative')).status).toBe(400);
+    expect((await api('/api/agents/fake/options?path=' + encodeURIComponent(dir), { token: null })).status).toBe(401);
+  });
+
+  it('keeps server settings: plan-mode auto approval is on until switched off, and unknown keys are refused', async () => {
+    await start();
+    expect((await api('/api/settings')).body).toEqual({ planAutoApprove: true, defaultApproval: 'ask', agentGuide: true });
+    expect((await api('/api/settings', { method: 'PUT', body: { planAutoApprove: false, defaultApproval: 'auto' } })).body).toEqual({ planAutoApprove: false, defaultApproval: 'auto', agentGuide: true });
+    expect((await api('/api/settings')).body).toEqual({ planAutoApprove: false, defaultApproval: 'auto', agentGuide: true });
+    expect((await api('/api/settings', { method: 'PUT', body: { defaultApproval: 'everything' } })).status).toBe(400);
+    expect((await api('/api/settings', { method: 'PUT', body: { nope: 1 } })).status).toBe(400);
+    expect((await api('/api/settings', { token: null })).status).toBe(401);
+  });
+
+  it('lists each agent with the limits it has reported (none yet on a fresh install)', async () => {
+    await start();
+    expect((await api('/api/usage')).body).toEqual([{ id: 'fake', label: 'Fake agent', limits: [] }]);
+    store.setSetting('limits:fake', JSON.stringify({ five_hour: { type: 'five_hour', used: 0.2, resetsAt: 1, status: 'allowed', updatedAt: 1 } }));
+    expect((await api('/api/usage?refresh=1')).body[0].limits).toHaveLength(1);
+    expect((await api('/api/usage', { token: null })).status).toBe(401);
+  });
+
+  it('renames and deletes sessions and projects, taking their events and settings along', async () => {
+    await start();
+    const project = (await api('/api/projects', { method: 'POST', body: { name: 'p', path: dir } })).body;
+    const session = (await api('/api/sessions', { method: 'POST', body: { projectId: project.id, agentId: 'fake' } })).body;
+    expect((await api(`/api/sessions/${session.id}`, { method: 'PATCH', body: { title: '  New   name ' } })).status).toBe(200);
+    expect(store.getSession(session.id)?.title).toBe('New name');
+    expect((await api(`/api/sessions/${session.id}`, { method: 'PATCH', body: { title: '   ' } })).status).toBe(400);
+    expect((await api('/api/sessions/nope', { method: 'PATCH', body: { title: 'x' } })).status).toBe(404);
+    expect((await api(`/api/projects/${project.id}`, { method: 'PATCH', body: { name: 'Renamed' } })).status).toBe(200);
+    expect(store.getProject(project.id)?.name).toBe('Renamed');
+
+    store.setSetting(`approval:${session.id}`, 'full');
+    expect((await api(`/api/sessions/${session.id}`, { method: 'DELETE' })).status).toBe(200);
+    expect(store.getSession(session.id)).toBeUndefined();
+    expect(store.eventsSince(session.id, 0)).toEqual([]);
+    expect(store.getSetting(`approval:${session.id}`)).toBeNull();
+    expect((await api(`/api/sessions/${session.id}`, { method: 'DELETE' })).status).toBe(404);
+
+    const second = (await api('/api/sessions', { method: 'POST', body: { projectId: project.id, agentId: 'fake' } })).body;
+    expect((await api(`/api/projects/${project.id}`, { method: 'DELETE' })).status).toBe(200);
+    expect(store.getProject(project.id)).toBeUndefined();
+    expect(store.getSession(second.id)).toBeUndefined();
+    expect((await api(`/api/projects/${project.id}`, { method: 'DELETE' })).status).toBe(404);
+  });
 });

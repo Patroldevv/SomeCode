@@ -237,4 +237,38 @@ describe('Composer', () => {
     expect(onCancel).toHaveBeenCalledTimes(1);
     expect(box()).toHaveFocus();
   });
+
+  describe('attached files', () => {
+    const upload = async (...files: File[]) => {
+      const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+      await userEvent.upload(input, files);
+    };
+
+    it('sends a text file wrapped after the message, shows it as a chip, and can drop it again', async () => {
+      const onSend = vi.fn();
+      render(<Host onSend={onSend} />);
+      await upload(new File(['const a = 1;'], 'a.ts', { type: '' }));
+      expect(await screen.findByText('a.ts')).toBeInTheDocument();
+      await userEvent.type(box(), 'look{Enter}');
+      expect(onSend).toHaveBeenCalledWith('look\n\n<attached-file name="a.ts">\nconst a = 1;\n</attached-file>');
+      expect(screen.queryByText('a.ts')).not.toBeInTheDocument();
+    });
+
+    it('lets a file be sent without any text, and removing it empties the chip list', async () => {
+      const onSend = vi.fn();
+      render(<Host onSend={onSend} />);
+      await upload(new File(['x'], 'notes.md', { type: 'text/markdown' }));
+      await userEvent.click(await screen.findByRole('button', { name: 'Remove notes.md' }));
+      expect(screen.queryByText('notes.md')).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
+    });
+
+    it('refuses a file that is not text or is too large, and says why', async () => {
+      render(<Host />);
+      await upload(new File([new Uint8Array([0, 1, 2])], 'program.exe', { type: 'application/octet-stream' }));
+      expect(await screen.findByRole('alert')).toHaveTextContent('program.exe is neither an image nor a text file.');
+      await upload(new File(['x'.repeat(41 * 1024)], 'big.txt', { type: 'text/plain' }));
+      await screen.findByText(/big\.txt is too large/);
+    });
+  });
 });

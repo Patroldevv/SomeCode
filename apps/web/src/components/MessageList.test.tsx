@@ -115,7 +115,7 @@ function List({
   plan?: PlanEntry[] | null;
   status?: SessionStatus;
   answeredRequests?: ReadonlySet<string>;
-  onRespond?: (requestId: string, optionId: string) => void;
+  onRespond?: (requestId: string, optionId: string | null) => void;
 }) {
   return (
     <div style={{ height: VIEWPORT }}>
@@ -142,10 +142,11 @@ describe('MessageList', () => {
   it('renders every item of a short list, in order', () => {
     const items = [user('1'), thought('2', 3000), agent('3'), tool('4'), permission('5')];
     render(<List items={items} />);
-    expect(rowKeys()).toEqual(['1', '2', '3', '4', '5']);
+    // The tool of this turn changed a file, so its summary closes the turn.
+    expect(rowKeys()).toEqual(['1', '2', '3', '4', '5', 'edits:1']);
     expect(screen.getByText('user 1')).toBeInTheDocument();
     expect(screen.getByText('agent 3')).toBeInTheDocument();
-    expect(screen.getByText('tool 4')).toBeInTheDocument();
+    expect(screen.getByText(/tool 4/)).toBeInTheDocument();
     expect(screen.getByText('permission 5')).toBeInTheDocument();
   });
 
@@ -227,10 +228,13 @@ describe('MessageList', () => {
     expect(document.querySelector('[data-sticky-plan]')).toBeNull();
   });
 
-  it('shows the last thought live (open) only while running with no endedAt', () => {
+  it('shows the last thought live (folded, openable) only while running with no endedAt', () => {
     const { rerender } = render(<List items={[user('1'), thought('2')]} status="running" />);
-    expect(screen.getByText('Thinking…')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Thinking…' })).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByText('thinking 2')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Thinking…' }));
     expect(screen.getByText('thinking 2')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Thinking…' }));
 
     // The turn ended: folded "Thought" toggle, text hidden.
     rerender(<List items={[user('1'), thought('2')]} status="ready" />);
@@ -285,7 +289,6 @@ describe('MessageList', () => {
     expect(callsFor(ToolCard, '1')).toBe(toolBefore);
     expect(agentCalls('agent 2')).toBe(agentBefore);
     expect(callsFor(ThinkingBlock, '3')).toBeGreaterThan(thoughtBefore);
-    expect(screen.getByText('more')).toBeInTheDocument();
   });
 
   it('re-renders a permission row when its answered state changes, and forwards the answer', () => {
@@ -304,16 +307,17 @@ describe('MessageList', () => {
     const items = [user('1'), agent('2'), tool('3')];
     const { rerender } = render(<List items={items} />);
     const nodes = rows();
-    expect(rowKeys()).toEqual(['1', '2', '3']);
+    expect(rowKeys()).toEqual(['1', '2', '3', 'edits:1']);
 
     const appended = [...items, thought('4', 2000), agent('5')];
     rerender(<List items={appended} />);
-    expect(rowKeys()).toEqual(['1', '2', '3', '4', '5']);
+    expect(rowKeys()).toEqual(['1', '2', '3', '4', '5', 'edits:1']);
     const after = rows();
-    nodes.forEach((node, i) => expect(after[i]).toBe(node));
+    nodes.slice(0, 3).forEach((node, i) => expect(after[i]).toBe(node));
 
+    // The summary stays with its own turn when the next message is written.
     rerender(<List items={[...appended, user('6')]} />);
-    expect(rowKeys()).toEqual(['1', '2', '3', '4', '5', '6']);
+    expect(rowKeys()).toEqual(['1', '2', '3', '4', '5', 'edits:1', '6']);
   });
 
   it('a wheel up shows the jump button with the new-item count; clicking it follows again and keeps focus in the log', () => {
@@ -439,5 +443,18 @@ describe('MessageList', () => {
   it('hides the jump button while following the end', () => {
     render(<List items={[user('1'), agent('2')]} />);
     expect(screen.queryByRole('button', { name: /Jump to latest/ })).toBeNull();
+  });
+
+  it("keeps a sub-agent's own tool calls out of the main conversation", () => {
+    const child = { ...(tool('9') as Item & { kind: 'tool' }), parent: { id: 'task' } } as Item;
+    render(<List items={[user('1'), agent('2'), child]} />);
+    expect(rowKeys()).not.toContain('9');
+  });
+
+  it('groups consecutive tool calls into a collapsible tool group', () => {
+    const t1 = tool('1');
+    const t2 = tool('2');
+    render(<List items={[user('u1'), t1, t2, agent('a1')]} />);
+    expect(screen.getByRole('button', { name: /2 actions/ })).toBeInTheDocument();
   });
 });

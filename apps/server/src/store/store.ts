@@ -1,9 +1,22 @@
 import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
-import type { NormalizedEvent, StoredEvent } from '@somecode/protocol';
+import {
+  applyEvent,
+  initialState,
+  SomeCodeError,
+  HISTORY_PAGE_ITEMS,
+  type Item,
+  type SessionHistoryPage,
+  type SessionState,
+  type NormalizedEvent,
+  type StoredEvent,
+} from '@somecode/protocol';
 import { SCHEMA_SQL } from './schema.sql.ts';
 
 export const MAX_EVENT_BYTES = 1_048_576;
+export const MAX_EVENT_PAGE = 200;
+const MAX_EVENT_PAGE_BYTES = 1024 * 1024;
+const MAX_HISTORY_PAGE_BYTES = 2 * 1024 * 1024;
 
 const MAX_TEXT_BYTES = 64 * 1024;
 const MAX_RAW_BYTES = 256 * 1024;
@@ -32,8 +45,19 @@ export interface Store {
   listSessions(projectId: string): SessionRow[];
   setAcpSessionId(id: string, acpSessionId: string): void;
   appendEvent(sessionId: string, event: NormalizedEvent): StoredEvent;
-  eventsSince(sessionId: string, afterSeq: number): StoredEvent[];
+  eventsSince(sessionId: string, afterSeq: number, limit?: number): StoredEvent[];
+  history(sessionId: string, beforeSeq?: number, limit?: number): SessionHistoryPage;
+  pendingPermissions(sessionId: string, afterSeq?: number): { seq: number; requestId: string }[];
   lastSeq(sessionId: string): number;
+  /** Small server-side preferences (JSON text by key). */
+  renameSession(id: string, title: string): boolean;
+  renameProject(id: string, name: string): boolean;
+  /** Removes a session with its events, projection and saved settings. */
+  deleteSession(id: string): boolean;
+  /** Removes a project and all of its sessions. */
+  deleteProject(id: string): boolean;
+  getSetting(key: string): string | null;
+  setSetting(key: string, value: string): void;
   close(): void;
 }
 
@@ -196,6 +220,7 @@ export function openStore(dbPath: string): Store {
     'SELECT * FROM sessions WHERE project_id = ? ORDER BY created_at, rowid',
   );
   const updateAcpId = db.prepare('UPDATE sessions SET acp_session_id = ? WHERE id = ?');
+  const setInitialTitle = db.prepare('UPDATE sessions SET title = ? WHERE id = ? AND title IS NULL');
   // seq is assigned inside the single INSERT statement, so allocation and write are atomic.
   const insertEvent = db.prepare(
     `INSERT INTO events (session_id, seq, ts, json)
@@ -203,9 +228,109 @@ export function openStore(dbPath: string): Store {
      RETURNING seq`,
   );
   const selectEvents = db.prepare(
-    'SELECT seq, ts, json FROM events WHERE session_id = ? AND seq > ? ORDER BY seq',
+    'SELECT seq, ts, json FROM events WHERE session_id = ? AND seq > ? ORDER BY seq LIMIT ?',
   );
   const selectLastSeq = db.prepare('SELECT MAX(seq) AS seq FROM events WHERE session_id = ?');
+
+  const updateSessionTitle = db.prepare('UPDATE sessions SET title = ? WHERE id = ?');
+  const updateProjectName = db.prepare('UPDATE projects SET name = ? WHERE id = ?');
+  const sessionIdsOf = db.prepare('SELECT id FROM sessions WHERE project_id = ?');
+  const removeSession = (id: string): boolean => {
+    db.prepare('DELETE FROM session_items WHERE session_id = ?').run(id);
+    db.prepare('DELETE FROM session_checkpoints WHERE session_id = ?').run(id);
+    db.prepare('DELETE FROM events WHERE session_id = ?').run(id);
+    db.prepare('DELETE FROM settings WHERE key = ?').run(`approval:${id}`);
+    return Number(db.prepare('DELETE FROM sessions WHERE id = ?').run(id).changes) > 0;
+  };
+  const inTransaction = <T,>(work: () => T): T => {
+    db.exec('BEGIN');
+    try {
+      const result = work();
+      db.exec('COMMIT');
+      return result;
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+  };
+  const selectSetting = db.prepare('SELECT value FROM settings WHERE key = ?');
+  const upsertSetting = db.prepare('INSERT INTO settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value');
+  const checkpoint = db.prepare('SELECT json FROM session_checkpoints WHERE session_id = ?');
+  const saveCheckpoint = db.prepare(
+    `INSERT INTO session_checkpoints(session_id, json) VALUES (?, ?)
+     ON CONFLICT(session_id) DO UPDATE SET json = excluded.json`,
+  );
+  const saveItem = db.prepare(
+    `INSERT INTO session_items(session_id, seq, tool_id, request_id, json) VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(session_id, seq) DO UPDATE SET json = excluded.json`,
+  );
+  const byTool = db.prepare('SELECT json FROM session_items WHERE session_id = ? AND tool_id = ? ORDER BY seq DESC LIMIT 1');
+  const byPermission = db.prepare('SELECT json FROM session_items WHERE session_id = ? AND request_id = ? ORDER BY seq DESC LIMIT 1');
+  const itemPage = db.prepare('SELECT seq,json FROM session_items WHERE session_id = ? AND seq < ? ORDER BY seq DESC LIMIT ?');
+  const pendingPermissions = db.prepare(
+    `SELECT seq, request_id FROM session_items
+     WHERE session_id = ? AND seq > ? AND request_id IS NOT NULL AND json_extract(json, '$.resolved') = 0
+     ORDER BY seq LIMIT 100`,
+  );
+
+  const eventsSince = (sessionId: string, afterSeq: number, limit = MAX_EVENT_PAGE): StoredEvent[] => {
+    if (!Number.isSafeInteger(afterSeq) || afterSeq < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > MAX_EVENT_PAGE) {
+      throw new SomeCodeError('bad_request', `event cursor must be nonnegative and limit must be 1..${MAX_EVENT_PAGE}`);
+    }
+    const result: StoredEvent[] = [];
+    let bytes = 0;
+    for (const raw of selectEvents.iterate(sessionId, afterSeq, limit)) {
+      const r = raw as { seq: number; ts: number; json: string };
+      const size = Buffer.byteLength(r.json, 'utf8');
+      if (result.length && bytes + size > MAX_EVENT_PAGE_BYTES) break;
+      bytes += size;
+      result.push({ seq: r.seq, ts: r.ts, sessionId, event: JSON.parse(r.json) as NormalizedEvent });
+    }
+    return result;
+  };
+
+  /** Catch up using bounded journal pages and a constant-size reducer checkpoint. */
+  const projectHistory = (sessionId: string): SessionState => {
+    const row = checkpoint.get(sessionId) as { json: string } | undefined;
+    let state: SessionState = row ? JSON.parse(row.json) as SessionState : initialState();
+    db.exec('BEGIN');
+    try {
+      for (;;) {
+        const page = eventsSince(sessionId, state.lastSeq);
+        if (page.length === 0) break;
+        for (const stored of page) {
+          const event = stored.event;
+          // A late patch can address an item outside the rolling checkpoint. Load only its targets.
+          const targets = event.type === 'tool_call_update'
+            ? byTool.all(sessionId, event.id)
+            : event.type === 'permission_resolved' ? byPermission.all(sessionId, event.requestId) : [];
+          const items = new Map(state.items.map((item) => [item.key, item]));
+          for (const target of targets as { json: string }[]) {
+            const item = JSON.parse(target.json) as Item;
+            items.set(item.key, item);
+          }
+          const input = { ...state, items: [...items.values()].sort((a, b) => Number(a.key) - Number(b.key)) };
+          const next = applyEvent(input, stored);
+          for (const item of next.items) {
+            saveItem.run(
+              sessionId,
+              Number(item.key),
+              item.kind === 'tool' ? item.id : null,
+              item.kind === 'permission' ? item.requestId : null,
+              JSON.stringify(item),
+            );
+          }
+          state = { ...next, items: next.items.slice(-1) };
+        }
+      }
+      saveCheckpoint.run(sessionId, JSON.stringify(state));
+      db.exec('COMMIT');
+      return state;
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+  };
 
   return {
     addProject({ name, path }) {
@@ -246,12 +371,60 @@ export function openStore(dbPath: string): Store {
       const { event: bounded, json } = boundEvent(event);
       const ts = Date.now();
       const row = insertEvent.get(sessionId, ts, json) as { seq: number };
+      if (bounded.type === 'user_message') {
+        const title = bounded.text.trim().replace(/\s+/gu, ' ').slice(0, 80);
+        if (title) setInitialTitle.run(title, sessionId);
+      }
       return { seq: row.seq, sessionId, ts, event: bounded };
     },
-    eventsSince(sessionId, afterSeq) {
-      return (selectEvents.all(sessionId, afterSeq) as { seq: number; ts: number; json: string }[]).map(
-        (r) => ({ seq: r.seq, sessionId, ts: r.ts, event: JSON.parse(r.json) as NormalizedEvent }),
-      );
+    eventsSince,
+    renameSession(id, title) {
+      return Number(updateSessionTitle.run(title, id).changes) > 0;
+    },
+    renameProject(id, name) {
+      return Number(updateProjectName.run(name, id).changes) > 0;
+    },
+    deleteSession(id) {
+      return inTransaction(() => removeSession(id));
+    },
+    deleteProject(id) {
+      return inTransaction(() => {
+        for (const row of sessionIdsOf.all(id) as { id: string }[]) removeSession(row.id);
+        return Number(db.prepare('DELETE FROM projects WHERE id = ?').run(id).changes) > 0;
+      });
+    },
+    getSetting(key) {
+      return (selectSetting.get(key) as { value: string } | undefined)?.value ?? null;
+    },
+    setSetting(key, value) {
+      upsertSetting.run(key, value);
+    },
+    pendingPermissions(sessionId, afterSeq = 0) {
+      if (!Number.isSafeInteger(afterSeq) || afterSeq < 0) throw new SomeCodeError('bad_request', 'invalid permission cursor');
+      projectHistory(sessionId);
+      return (pendingPermissions.all(sessionId, afterSeq) as {seq: number; request_id: string}[])
+        .map((row) => ({ seq: row.seq, requestId: row.request_id }));
+    },
+    history(sessionId, beforeSeq = Number.MAX_SAFE_INTEGER, limit = HISTORY_PAGE_ITEMS) {
+      if (!Number.isSafeInteger(beforeSeq) || beforeSeq < 1 || !Number.isSafeInteger(limit) || limit < 1 || limit > HISTORY_PAGE_ITEMS) {
+        throw new SomeCodeError('bad_request', `history cursor must be positive and limit must be 1..${HISTORY_PAGE_ITEMS}`);
+      }
+      const state = projectHistory(sessionId);
+      const rows: { seq: number; json: string }[] = [];
+      let bytes = 0;
+      let hasMore = false;
+      for (const raw of itemPage.iterate(sessionId, beforeSeq, limit + 1)) {
+        const r = raw as { seq: number; json: string };
+        const size = Buffer.byteLength(r.json, 'utf8');
+        if (rows.length >= limit || (rows.length > 0 && bytes + size > MAX_HISTORY_PAGE_BYTES)) {
+          hasMore = true;
+          break;
+        }
+        bytes += size;
+        rows.push(r);
+      }
+      const items = rows.reverse().map((r) => JSON.parse(r.json) as Item);
+      return { state: { ...state, items }, beforeSeq: hasMore ? Number(items[0]!.key) : null };
     },
     lastSeq(sessionId) {
       const r = selectLastSeq.get(sessionId) as { seq: number | null };

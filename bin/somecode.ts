@@ -11,18 +11,18 @@ import { pickBrowserCommand } from '../apps/server/src/launcher/browser.ts';
 import { startServer, type RunningServer } from '../apps/server/src/server.ts';
 import { openStore } from '../apps/server/src/store/store.ts';
 
-const USAGE = 'usage: somecode [--no-open] [--port <0-65535>]\n';
+const USAGE = 'usage: somecode [--no-open] [--browser] [--port <0-65535>]\n';
 
 function fail(message: string, code: number): never {
   process.stderr.write(`somecode: ${message}\n`);
   process.exit(code);
 }
 
-function parseCli(): { open: boolean; port: number | undefined } {
-  let values: { 'no-open'?: boolean; port?: string };
+function parseCli(): { open: boolean; port: number | undefined; browser: boolean } {
+  let values: { 'no-open'?: boolean; port?: string; browser?: boolean };
   try {
     ({ values } = parseArgs({
-      options: { 'no-open': { type: 'boolean' }, port: { type: 'string' } },
+      options: { 'no-open': { type: 'boolean' }, port: { type: 'string' }, browser: { type: 'boolean' } },
       allowPositionals: false,
     }));
   } catch (err) {
@@ -36,7 +36,7 @@ function parseCli(): { open: boolean; port: number | undefined } {
       fail(`invalid --port "${values.port}": expected an integer from 0 to 65535`, 2);
     }
   }
-  return { open: values['no-open'] !== true, port };
+  return { open: values['no-open'] !== true, port, browser: values.browser === true };
 }
 
 function isFile(path: string): boolean {
@@ -47,7 +47,25 @@ function isFile(path: string): boolean {
   }
 }
 
-const { open, port } = parseCli();
+function pickLauncher(url: string, pathEnv: string, preferBrowser = false): { command: string; args: string[] } {
+  if (!preferBrowser) {
+    const desktopEntry = fileURLToPath(new URL('../desktop/main.cjs', import.meta.url));
+    if (isFile(desktopEntry)) {
+      const candidates = ['electron42', 'electron'];
+      const dirs = (pathEnv ?? '').split(':').filter(Boolean);
+      for (const name of candidates) {
+        for (const dir of dirs) {
+          const full = join(dir, name);
+          if (isFile(full)) return { command: full, args: [desktopEntry, url] };
+        }
+        if (isFile(`/usr/bin/${name}`)) return { command: `/usr/bin/${name}`, args: [desktopEntry, url] };
+      }
+    }
+  }
+  return pickBrowserCommand(url, pathEnv);
+}
+
+const { open, port, browser } = parseCli();
 
 // Resolved from this file, not the working directory, so `somecode` works from anywhere.
 const staticDir = fileURLToPath(new URL('../apps/web/dist', import.meta.url));
@@ -75,16 +93,16 @@ const launchUrl = `${server.url}#token=${token}`;
 process.stdout.write(`SomeCode: ${launchUrl}\n`);
 
 if (open) {
-  const { command, args } = pickBrowserCommand(launchUrl, process.env.PATH ?? '');
+  const { command, args } = pickLauncher(launchUrl, process.env.PATH ?? '', browser);
   try {
     const child = spawn(command, args, { detached: true, stdio: 'ignore' });
     child.on('error', (err: NodeJS.ErrnoException) => {
-      process.stderr.write(`somecode: could not open a browser (${err.code ?? 'error'}); open the URL above manually.\n`);
+      process.stderr.write(`somecode: could not open a window (${err.code ?? 'error'}); open the URL above manually.\n`);
     });
     child.unref();
   } catch (err) {
     process.stderr.write(
-      `somecode: could not open a browser (${(err as NodeJS.ErrnoException).code ?? 'error'}); open the URL above manually.\n`,
+      `somecode: could not open a window (${(err as NodeJS.ErrnoException).code ?? 'error'}); open the URL above manually.\n`,
     );
   }
 }

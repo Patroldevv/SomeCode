@@ -1,3 +1,4 @@
+import { readLimits } from '../limits.ts';
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -98,6 +99,157 @@ describe('createSession', () => {
     expect((await rejection(manager.createSession(projectId, 'fake'))).code).toBe('agent_not_installed');
     const [row] = store.listSessions(projectId);
     expect(statuses(row!.id)).toEqual(['disconnected']);
+  });
+});
+
+describe('explicit resume', () => {
+  it('cancels permissions abandoned by a previous process, including requests outside the recent page', async () => {
+    setup(fakeDriver('load'));
+    const row=store.createSession({projectId,agentId:'fake'});
+    store.setAcpSessionId(row.id,'durable-session');
+    for(let n=0;n<105;n++) store.appendEvent(row.id,{type:'permission_request',requestId:`lost-${n}`,toolCallId:`tool-${n}`,title:'old approval',options:[{id:'allow',name:'Allow',kind:'allow_once'}]});
+    store.appendEvent(row.id,{type:'status',status:'running'});
+    await manager.resumeSession(row.id);
+    const page=manager.history(row.id,undefined,100);
+    expect(page.state.items.every((item)=>item.kind!=='permission'||item.resolved)).toBe(true);
+    const older=manager.history(row.id,page.beforeSeq!,100);
+    expect(older.state.items).toHaveLength(5);
+    expect(older.state.items.every((item)=>item.kind==='permission'&&item.resolved)).toBe(true);
+  });
+  it('keeps a resuming agent reachable across unsubscribe/resubscribe and closes its child on shutdown', async () => {
+    let release!: () => void;
+    const detected = new Promise<void>((resolve)=>{release=resolve;});
+    const tag = `somecode-test-${randomUUID()}`;
+    const base = fakeDriver('load');
+    setup({...base,detect:async()=>{await detected;return {installed:true};},launch:()=>{
+      const launch=base.launch();
+      return {...launch,args:[...launch.args,tag]};
+    }});
+    const row=store.createSession({projectId,agentId:'fake'});
+    store.setAcpSessionId(row.id,'durable-session');
+    const resuming=manager.resumeSession(row.id);
+    const first=manager.subscribe(row.id,0,()=>{});
+    first.unsubscribe();
+    const statuses: string[]=[];
+    manager.subscribe(row.id,0,(stored)=>{if(stored.event.type==='status')statuses.push(stored.event.status);});
+    release();
+    await resuming;
+    expect(statuses).toContain('ready');
+    expect(()=>manager.prompt(row.id,'reachable')).not.toThrow();
+    await waitForType(row.id,'turn_end');
+    expect(pids(tag)).toHaveLength(1);
+    await manager.closeAll();
+    expect(pids(tag)).toEqual([]);
+  });
+  it('restores the same ACP session after reopening the journal in a new manager', async () => {
+    store.close();
+    const database = join(dir,'restart.sqlite');
+    store = openStore(database);
+    projectId = store.addProject({name:'restart',path:dir}).id;
+    setup(fakeDriver('load'));
+    const row = await manager.createSession(projectId,'fake');
+    manager.prompt(row.id,'saved prompt');
+    await waitForType(row.id,'turn_end');
+    await manager.closeAll();
+    store.close();
+    store = openStore(database);
+    setup(fakeDriver('load'));
+    expect(manager.history(row.id).state.status).toBe('disconnected');
+    const restored = await manager.resumeSession(row.id);
+    expect(restored.acpSessionId).toBe('fake-session-1');
+    expect(types(row.id).filter((t)=>t === 'user_message')).toHaveLength(1);
+    expect(types(row.id).filter((t)=>t === 'agent_message')).toHaveLength(1);
+    expect(manager.history(row.id).state.status).toBe('ready');
+  });
+  it('loads the durable ACP id once across concurrent resumes and does not journal replayed messages', async () => {
+    setup(fakeDriver('load'));
+    const row = store.createSession({ projectId, agentId: 'fake' });
+    store.setAcpSessionId(row.id, 'durable-session');
+    store.appendEvent(row.id, { type: 'user_message', text: 'already saved' });
+    const [a, b] = await Promise.all([manager.resumeSession(row.id), manager.resumeSession(row.id)]);
+    expect(a.acpSessionId).toBe('durable-session');
+    expect(b).toEqual(a);
+    expect(types(row.id).filter((t) => t === 'user_message')).toHaveLength(1);
+    expect(statuses(row.id)).toEqual(['ready']);
+    await manager.resumeSession(row.id);
+    expect(statuses(row.id)).toEqual(['ready']);
+    manager.prompt(row.id, 'new prompt');
+    await waitForType(row.id, 'turn_end');
+  });
+
+  it('journals a prompt once even when the agent echoes it back as a user message', async () => {
+    setup(fakeDriver('echo_user'));
+    const row = await manager.createSession(projectId, 'fake');
+    manager.prompt(row.id, 'echo me');
+    await waitForType(row.id, 'turn_end');
+    expect(types(row.id).filter((t) => t === 'user_message')).toHaveLength(1);
+  });
+
+  it('never replaces a persisted session when the agent cannot load sessions', async () => {
+    setup(fakeDriver('no_load'));
+    const row = store.createSession({ projectId, agentId: 'fake' });
+    store.setAcpSessionId(row.id, 'keep-this-id');
+    await expect(manager.resumeSession(row.id)).rejects.toMatchObject({ code: 'bad_request' });
+    expect(store.getSession(row.id)?.acpSessionId).toBe('keep-this-id');
+    expect(statuses(row.id)).toEqual(['disconnected']);
+    expect(() => manager.prompt(row.id, 'no')).toThrow(/not connected/);
+  });
+  it('retains the saved ACP id and disconnected state when loading fails', async () => {
+    setup(fakeDriver('load_error'));
+    const row = store.createSession({ projectId, agentId: 'fake' });
+    store.setAcpSessionId(row.id,'durable-session');
+    await expect(manager.resumeSession(row.id)).rejects.toMatchObject({code:'auth_required'});
+    expect(store.getSession(row.id)?.acpSessionId).toBe('durable-session');
+    expect(statuses(row.id)).toEqual(['disconnected']);
+    expect(store.listSessions(projectId)).toHaveLength(1);
+  });
+});
+
+describe('normalized history', () => {
+  it('snapshots short persisted sessions as disconnected after restart, even when their last journal status was ready', () => {
+    setup(fakeDriver('basic'));
+    const row = store.createSession({projectId,agentId:'fake'});
+    store.setAcpSessionId(row.id,'durable-session');
+    store.appendEvent(row.id,{type:'user_message',text:'saved'});
+    store.appendEvent(row.id,{type:'status',status:'ready'});
+    const got: StoredEvent[] = [];
+    const sub = manager.subscribe(row.id,0,(event)=>got.push(event));
+    expect(sub.snapshot?.state.status).toBe('disconnected');
+    expect(sub.snapshot?.state.items).toMatchObject([{kind:'user',text:'saved'}]);
+    expect(sub.snapshot?.state.lastSeq).toBe(2);
+    expect(got).toEqual([]);
+    sub.unsubscribe();
+  });
+  it('replaces a large replay with a bounded snapshot and keeps subsequent live events contiguous', async () => {
+    setup(fakeDriver('basic'));
+    const row = await manager.createSession(projectId, 'fake');
+    for (let n = 0; n < 250; n++) store.appendEvent(row.id, { type: 'user_message', text: `message ${n}` });
+    const delivered: number[] = [];
+    const sub = manager.subscribe(row.id, 0, (event) => delivered.push(event.seq));
+    expect(delivered).toEqual([]);
+    expect(sub.snapshot?.state.items).toHaveLength(100);
+    expect(sub.snapshot?.beforeSeq).toBe(153);
+    expect(sub.snapshot?.state.lastSeq).toBe(252);
+    manager.prompt(row.id, 'next');
+    await vi.waitFor(() => expect(store.eventsSince(row.id,252).some((e)=>e.event.type === 'turn_end')).toBe(true));
+    expect(delivered[0]).toBe(253);
+    expect(delivered).toEqual(delivered.map((_, n) => n + 253));
+  });
+  it('pages old items with late tool updates intact and keeps the live cursor at the journal head', () => {
+    setup(fakeDriver('basic'));
+    const row = store.createSession({ projectId, agentId: 'fake' });
+    store.appendEvent(row.id, { type: 'tool_call', id: 'old-tool', title: 'Read', kind: 'read', status: 'pending', content: [] });
+    for (let n = 0; n < 5; n++) store.appendEvent(row.id, { type: 'user_message', text: `message ${n}` });
+    store.appendEvent(row.id, { type: 'tool_call_update', id: 'old-tool', patch: { status: 'completed' } });
+    const newest = manager.history(row.id, undefined, 2);
+    expect(newest.state.items.map((i) => i.key)).toEqual(['5', '6']);
+    expect(newest.beforeSeq).toBe(5);
+    const middle = manager.history(row.id, newest.beforeSeq!, 2);
+    expect(middle.state.items.map((i) => i.key)).toEqual(['3', '4']);
+    const oldest = manager.history(row.id, middle.beforeSeq!, 2);
+    expect(oldest.state.items).toMatchObject([{ kind: 'tool', status: 'completed' }, { kind: 'user', text: 'message 0' }]);
+    expect(oldest.state.lastSeq).toBe(7);
+    expect(oldest.beforeSeq).toBeNull();
   });
 });
 
@@ -300,6 +452,74 @@ describe('prompt', () => {
 });
 
 describe('cancel, respondPermission, setConfig', () => {
+  it('carries the plan text of a permission request (leaving plan mode)', async () => {
+    setup(fakeDriver('plan_permission'));
+    const id = (await manager.createSession(projectId, 'fake')).id;
+    manager.prompt(id, 'plan it');
+    await waitForType(id, 'permission_request');
+    const request = store.eventsSince(id, 0).find((e) => e.event.type === 'permission_request')!.event;
+    if (request.type !== 'permission_request') throw new Error('unreachable');
+    expect(request).toMatchObject({ title: 'Ready to code?', detail: '# Plan\n1. Do the thing' });
+    manager.respondPermission(id, request.requestId, 'allow');
+    await waitForType(id, 'turn_end');
+  });
+
+  it('shows an agent question as a form, validates the answer and hands it back to the agent', async () => {
+    setup(fakeDriver('ask_user'));
+    const id = (await manager.createSession(projectId, 'fake')).id;
+    manager.prompt(id, 'ask me');
+    await waitForType(id, 'permission_request');
+    const request = store.eventsSince(id, 0).find((e) => e.event.type === 'permission_request')!.event;
+    if (request.type !== 'permission_request') throw new Error('unreachable');
+    expect(request.title).toBe('Which stack?');
+    expect(request.form?.fields.map((f) => [f.key, f.type, f.required])).toEqual([['stack', 'string', true], ['notes', 'string', false]]);
+    expect(request.form?.fields[0]?.options).toEqual([{ value: 'ts', label: 'TypeScript' }, { value: 'py', label: 'Python' }]);
+    // A missing required value or a choice that was not offered is refused and the question stays open.
+    expect(() => manager.respondPermission(id, request.requestId, 'submit', {})).toThrow(/required/);
+    expect(() => manager.respondPermission(id, request.requestId, 'submit', { stack: 'rust' })).toThrow(/valid/);
+    manager.respondPermission(id, request.requestId, 'submit', { stack: 'ts', notes: 'fast', extra: 'dropped' });
+    await waitForType(id, 'turn_end');
+    const events = store.eventsSince(id, 0).map((e) => e.event);
+    expect(events.find((e) => e.type === 'permission_resolved')).toMatchObject({ outcome: 'selected', answer: { stack: 'ts', notes: 'fast' } });
+    expect(events.find((e) => e.type === 'agent_message' && e.text.startsWith('answer'))).toMatchObject({ text: 'answer: accept {"stack":"ts","notes":"fast"}' });
+  });
+
+  it('tags a sub-agent\'s tool calls with the sub-agent and keeps its chatter out of the conversation', async () => {
+    setup(fakeDriver('subagent'));
+    const id = (await manager.createSession(projectId, 'fake')).id;
+    manager.prompt(id, 'explore');
+    await waitForType(id, 'turn_end');
+    const events = store.eventsSince(id, 0).map((e) => e.event);
+    const calls = events.filter((e) => e.type === 'tool_call');
+    expect(calls.find((c) => c.type === 'tool_call' && c.id === 'child1')).toMatchObject({ parent: { id: 'task1' } });
+    expect(calls.find((c) => c.type === 'tool_call' && c.id === 'oc1')).toMatchObject({ parent: { id: 'session:abc', title: 'Find usages' } });
+    expect(calls.find((c) => c.type === 'tool_call' && c.id === 'task1')).not.toHaveProperty('parent');
+    expect(events.some((e) => e.type === 'agent_message' && e.text.includes('chatter'))).toBe(false);
+  });
+
+  it('announces the context window when a turn ends and keeps the agent\'s rate-limit reports', async () => {
+    setup(fakeDriver('usage'));
+    const id = (await manager.createSession(projectId, 'fake')).id;
+    manager.prompt(id, 'go');
+    await waitForType(id, 'turn_end');
+    const events = store.eventsSince(id, 0).map((e) => e.event);
+    expect(events.filter((e) => e.type === 'usage')).toEqual([{ type: 'usage', used: 30000, size: 200000 }]);
+    expect(events.findIndex((e) => e.type === 'usage')).toBeLessThan(events.findIndex((e) => e.type === 'turn_end'));
+    expect(readLimits(store, 'fake').map((l) => [l.type, l.used])).toEqual([['five_hour', 0.24], ['seven_day', 0.47]]);
+  });
+
+  it('skipping a question cancels it for the agent', async () => {
+    setup(fakeDriver('ask_user'));
+    const id = (await manager.createSession(projectId, 'fake')).id;
+    manager.prompt(id, 'ask me');
+    await waitForType(id, 'permission_request');
+    const request = store.eventsSince(id, 0).find((e) => e.event.type === 'permission_request')!.event;
+    if (request.type !== 'permission_request') throw new Error('unreachable');
+    manager.respondPermission(id, request.requestId, null);
+    await waitForType(id, 'turn_end');
+    expect(store.eventsSince(id, 0).map((e) => e.event).find((e) => e.type === 'agent_message' && e.text.startsWith('answer'))).toMatchObject({ text: 'answer: cancel null' });
+  });
+
   it('answers a permission request and finishes the turn', async () => {
     setup(fakeDriver('permission'));
     const { id } = await manager.createSession(projectId, 'fake');
@@ -318,12 +538,24 @@ describe('cancel, respondPermission, setConfig', () => {
     expect((await rejection(() => manager.respondPermission(id, 'r', null))).code).toBe('disconnected');
   });
 
+  it('keeps a per-session access level: shown as an option, changeable mid-turn, remembered, and never sent to the agent', async () => {
+    setup(fakeDriver('basic'));
+    const { id } = await manager.createSession(projectId, 'fake');
+    const first = store.eventsSince(id, 0).find((e) => e.event.type === 'config_options')!.event;
+    expect(first.type === 'config_options' && first.options.find((o) => o.id === 'approval')).toMatchObject({ category: 'approval', currentValue: 'ask' });
+    await manager.setConfig(id, 'approval', 'full');
+    const last = store.eventsSince(id, 0).at(-1)!.event;
+    expect(last).toMatchObject({ type: 'config_options', options: [{ id: 'model' }, { id: 'approval', currentValue: 'full' }] });
+    expect(store.getSetting(`approval:${id}`)).toBe('full');
+    expect((await rejection(manager.setConfig(id, 'approval', 'yolo'))).code).toBe('bad_request');
+  });
+
   it('forwards setConfig and validates the session', async () => {
     setup(fakeDriver('basic'));
     const { id } = await manager.createSession(projectId, 'fake');
     await manager.setConfig(id, 'model', 'smart');
     const last = store.eventsSince(id, 0).at(-1)!.event;
-    expect(last).toMatchObject({ type: 'config_options', options: [{ id: 'model', currentValue: 'smart' }] });
+    expect(last).toMatchObject({ type: 'config_options', options: [{ id: 'model', currentValue: 'smart' }, { id: 'approval', currentValue: 'ask' }] });
     expect((await rejection(manager.setConfig('nope', 'model', 'fast'))).code).toBe('not_found');
     expect((await rejection(manager.cancel('nope'))).code).toBe('not_found');
   });

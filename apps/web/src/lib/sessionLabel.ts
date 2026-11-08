@@ -40,6 +40,7 @@ export function sessionLabel(
   agents: AgentInfo[],
   now: number = Date.now(),
 ): string {
+  if(row.title?.trim())return firstLine(row.title);
   for (const item of state?.items ?? []) {
     if (item.kind !== 'user') continue;
     const label = firstLine(item.text);

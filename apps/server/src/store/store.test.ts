@@ -15,6 +15,51 @@ describe('store', () => {
     stores.push(s);
     return s;
   };
+  it('bounds journal pages and exposes a continuation without dropping the suffix', () => {
+    const store = open(':memory:');
+    const p = store.addProject({ name: 'p', path: '/tmp/p' });
+    const s = store.createSession({ projectId: p.id, agentId: 'fake' });
+    for (let i = 0; i < 6; i++) store.appendEvent(s.id, msg(String(i)));
+    expect(store.eventsSince(s.id, 0, 2).map((e) => e.seq)).toEqual([1, 2]);
+    expect(store.eventsSince(s.id, 2, 2).map((e) => e.seq)).toEqual([3, 4]);
+    expect(store.eventsSince(s.id, 4, 2).map((e) => e.seq)).toEqual([5, 6]);
+    expect(() => store.eventsSince(s.id, 0, -1)).toThrow();
+  });
+  it('persists a concise first-prompt title and leaves it stable on later prompts', () => {
+    const store = open(':memory:');
+    const p = store.addProject({name:'p',path:'/tmp/p'});
+    const s = store.createSession({projectId:p.id,agentId:'fake'});
+    store.appendEvent(s.id,{type:'user_message',text:'  Inspect\n  the workspace  '});
+    expect(store.getSession(s.id)?.title).toBe('Inspect the workspace');
+    store.appendEvent(s.id,{type:'user_message',text:'A later prompt'});
+    expect(store.listSessions(p.id)[0]?.title).toBe('Inspect the workspace');
+  });
+  it('keeps complete long streaming text across bounded normalized pages', () => {
+    const store = open(':memory:');
+    const p = store.addProject({ name: 'p', path: '/tmp/p' });
+    const s = store.createSession({ projectId: p.id, agentId: 'fake' });
+    for (let n = 0; n < 8; n++) store.appendEvent(s.id, msg('x'.repeat(32 * 1024)));
+    const recent = store.history(s.id, undefined, 2);
+    expect(recent.state.items).toHaveLength(2);
+    expect(recent.beforeSeq).not.toBeNull();
+    const old = store.history(s.id, recent.beforeSeq!, 2);
+    expect([...old.state.items, ...recent.state.items].reduce((n, item) => n + ('text' in item ? item.text.length : 0), 0)).toBe(256 * 1024);
+    expect(old.beforeSeq).toBeNull();
+  });
+  it('bounds pages by bytes as well as event count without skipping events', () => {
+    const store = open(':memory:');
+    const p = store.addProject({ name: 'p', path: '/tmp/p' });
+    const s = store.createSession({ projectId: p.id, agentId: 'fake' });
+    for (let n = 0; n < 60; n++) store.appendEvent(s.id, {type:'user_message',text:'x'.repeat(60 * 1024)});
+    const page = store.eventsSince(s.id,0);
+    expect(page.length).toBeLessThan(60);
+    expect(page[0]?.seq).toBe(1);
+    const next = store.eventsSince(s.id,page.at(-1)!.seq);
+    expect(next[0]?.seq).toBe(page.at(-1)!.seq + 1);
+    const history = store.history(s.id);
+    expect(history.state.items.length).toBeLessThan(60);
+    expect(history.beforeSeq).not.toBeNull();
+  });
   afterEach(() => {
     for (const s of stores.splice(0)) {
       try {

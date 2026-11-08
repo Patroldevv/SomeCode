@@ -1,5 +1,6 @@
 {
   "name": "somecode",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "bin": {
@@ -14,6 +15,7 @@
   },
   "scripts": {
     "start": "node bin/somecode.ts",
+    "desktop": "node bin/somecode.ts",
     "demo": "node scripts/demo.ts",
     "handshake": "node scripts/handshake.ts",
     "test": "vitest run",
@@ -25,5 +27,8 @@
   "devDependencies": {
     "typescript": "^7.0.2",
     "vitest": "^5.1.0"
+  },
+  "allowScripts": {
+    "node-pty@1.1.0": true
   }
 }

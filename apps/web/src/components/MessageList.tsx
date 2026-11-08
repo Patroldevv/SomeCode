@@ -1,19 +1,36 @@
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { useCallback, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import type { FormAnswer } from '@somecode/protocol';
 import { useStickToBottom } from '../hooks/useStickToBottom.ts';
+import { useFreshKeys } from "../hooks/useFreshKeys.ts";
 import { t } from '../i18n/index.ts';
 import type { Item, PlanEntry, SessionStatus } from '../lib/sessionState.ts';
 import { ChevronIcon } from './icons.tsx';
 import { ItemRow } from './ItemRow.tsx';
+import { EditsCard } from './items/EditsCard.tsx';
 import { PlanChecklist } from './items/PlanChecklist.tsx';
+import { PromptRail, promptEntries } from './PromptRail.tsx';
+import { SubagentGroup } from './items/SubagentGroup.tsx';
+import { groupSubagentCalls, subagentsOf, type Subagent, type AgentsRow } from '../lib/subagents.ts';
+import { withEditsRows, type EditedFile, type EditsRow } from '../lib/edits.ts';
+import { groupToolCalls, type ToolGroupRow } from '../lib/toolGroups.ts';
+import { ToolGroup } from './items/ToolGroup.tsx';
+import { SubagentWait } from './SubagentWait.tsx';
+
+export type SubagentWaitRow = { kind: 'agents_wait'; key: string; running: number };
+export type MessageListRow = AgentsRow | EditsRow | ToolGroupRow | Item | SubagentWaitRow;
 
 /** First-paint height guesses per kind (px, including the row's vertical padding); rows are then measured. */
-const ESTIMATE: Record<Item['kind'], number> = {
+const ESTIMATE: Record<Item['kind'] | 'edits' | 'agents' | 'tool_group' | 'agents_wait', number> = {
   user: 56,
   agent: 96,
   thought: 28,
   tool: 32,
+  tool_group: 34,
+  agents_wait: 36,
   permission: 120,
+  edits: 150,
+  agents: 32,
   error: 64,
   unsupported: 24,
 };
@@ -51,16 +68,43 @@ export function MessageList({
   answeredRequests,
   onRespond,
   signInHint,
+  subagents,
+  onOpenAgents,
 }: {
   items: Item[];
   plan: PlanEntry[] | null;
   status: SessionStatus;
   answeredRequests: ReadonlySet<string>;
-  onRespond: (requestId: string, optionId: string) => void;
+  onRespond: (requestId: string, optionId: string | null, answer?: FormAnswer) => void;
   /** The session agent's sign-in command, shown under an `auth_required` failure. */
   signInHint?: string;
+  subagents?: readonly Subagent[];
+  onOpenAgents?: (subagentId?: string) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const sessionSubagents = useMemo(() => subagents ?? subagentsOf(items), [subagents, items]);
+  const runningCount = sessionSubagents.filter((s) => s.status === 'running').length;
+  // Only items that arrive while the list is open animate in; history and scrolled-back rows do not.
+  // The log: the items, with a "files edited" summary after each finished turn that changed files.
+  // A sub-agent's own tool calls live in the sub-agent view (card and panel), not in the main conversation.
+  const rows: readonly MessageListRow[] = useMemo(() => {
+    const list: MessageListRow[] = [
+      ...groupToolCalls(
+        groupSubagentCalls(
+          withEditsRows(items, status === 'running').filter((r) => !(r.kind === 'tool' && r.parent)),
+        ),
+      ),
+    ];
+    if (runningCount > 0) {
+      list.push({
+        kind: 'agents_wait',
+        key: 'agents:wait',
+        running: runningCount,
+      });
+    }
+    return list;
+  }, [items, status, runningCount]);
+  const fresh = useFreshKeys(rows.map((r) => r.key));
   const [planEl, setPlanEl] = useState<HTMLDivElement | null>(null);
   const showPlan = plan !== null && plan.length > 0;
   const planHeight = useElementHeight(showPlan ? planEl : null);
@@ -70,7 +114,11 @@ export function MessageList({
   useLayoutEffect(() => {
     respondRef.current = onRespond;
   });
-  const respond = useCallback((requestId: string, optionId: string) => respondRef.current(requestId, optionId), []);
+  const respond = useCallback(
+    (requestId: string, optionId: string | null, answer?: FormAnswer) =>
+      answer ? respondRef.current(requestId, optionId, answer) : respondRef.current(requestId, optionId),
+    [],
+  );
 
   // Opened tool cards / thoughts by item key. Held here, not in the rows: virtualization unmounts rows outside
   // the window, and a row that comes back must not collapse under its cached (expanded) measured height. A new
@@ -84,11 +132,28 @@ export function MessageList({
     });
   }, []);
 
-  const getItemKey = useCallback((index: number) => (items[index] as Item).key, [items]);
-  const estimateSize = useCallback((index: number) => ESTIMATE[(items[index] as Item).kind], [items]);
+  const viewChanges = (files: readonly EditedFile[]) => {
+    const keys = new Set(files.flatMap((f) => f.toolKeys));
+    setExpanded((prev) => new Set([...prev, ...keys]));
+    const first = rows.findIndex((r) => {
+      if (keys.has(r.key)) return true;
+      if (r.kind === 'tool_group') return r.calls.some((c) => keys.has(c.key));
+      return false;
+    });
+    if (first >= 0) {
+      const hit = rows[first]!;
+      if (hit.kind === 'tool_group') {
+        setExpanded((prev) => new Set([...prev, hit.key]));
+      }
+      virtualizer.scrollToIndex(first, { align: 'start' });
+    }
+  };
+
+  const getItemKey = useCallback((index: number) => (rows[index] as { key: string }).key, [rows]);
+  const estimateSize = useCallback((index: number) => ESTIMATE[(rows[index] as { kind: keyof typeof ESTIMATE }).kind], [rows]);
 
   const virtualizer = useVirtualizer({
-    count: items.length,
+    count: rows.length,
     getScrollElement: () => scrollRef.current,
     getItemKey,
     estimateSize,
@@ -102,12 +167,17 @@ export function MessageList({
 
   const { pinned, newItemCount, onScroll, jumpToLatest } = useStickToBottom({
     scrollRef,
-    itemCount: items.length,
-    tail: items[items.length - 1],
+    itemCount: rows.length,
+    tail: rows[rows.length - 1] as Item | undefined,
     contentSize: totalSize + planHeight,
   });
 
-  const lastIndex = items.length - 1;
+  const lastIndex = rows.length - 1;
+
+  // The prompt rail: which prompt is being read is the last one at or above the first visible row.
+  const prompts = useMemo(() => promptEntries(rows), [rows]);
+  const firstVisible = virtualizer.range?.startIndex ?? 0;
+  const activeKey = pinned && prompts.length > 0 ? prompts[prompts.length - 1]!.key : (prompts.findLast((p) => p.index <= firstVisible)?.key ?? prompts[0]?.key ?? null);
 
   return (
     <div className="relative flex h-full min-h-0 flex-col">
@@ -136,7 +206,92 @@ export function MessageList({
         )}
         <div style={{ position: 'relative', width: '100%', height: totalSize }}>
           {virtualizer.getVirtualItems().map((row) => {
-            const item = items[row.index] as Item;
+            const entry = rows[row.index]!;
+            if (entry.kind === 'edits') {
+              return (
+                <div
+                  key={row.key}
+                  ref={virtualizer.measureElement}
+                  data-index={row.index}
+                  data-item-key={entry.key}
+                  style={{ position: 'absolute', top: 0, left: 0, width: '100%', transform: `translateY(${row.start - virtualizer.options.scrollMargin}px)` }}
+                >
+                  <div className="mx-auto w-full max-w-3xl px-4 py-2">
+                    <EditsCard files={entry.files} onView={() => viewChanges(entry.files)} />
+                  </div>
+                </div>
+              );
+            }
+            if (entry.kind === 'agents') {
+              return (
+                <div
+                  key={row.key}
+                  ref={virtualizer.measureElement}
+                  data-index={row.index}
+                  data-item-key={entry.key}
+                  style={{ position: 'absolute', top: 0, left: 0, width: '100%', transform: `translateY(${row.start - virtualizer.options.scrollMargin}px)` }}
+                >
+                  <div className="mx-auto w-full max-w-3xl px-4 py-2">
+                    <SubagentGroup
+                      calls={entry.calls}
+                      subagents={sessionSubagents}
+                      open={expanded.has(entry.key)}
+                      onToggle={() => toggle(entry.key)}
+                      {...(onOpenAgents ? { onOpenAgents } : {})}
+                    />
+                  </div>
+                </div>
+              );
+            }
+            if (entry.kind === 'tool_group') {
+              return (
+                <div
+                  key={row.key}
+                  ref={virtualizer.measureElement}
+                  data-index={row.index}
+                  data-item-key={entry.key}
+                  style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    width: '100%',
+                    transform: `translateY(${row.start - virtualizer.options.scrollMargin}px)`,
+                  }}
+                >
+                  <div className={`mx-auto w-full max-w-3xl px-4 py-1.5 ${fresh.has(entry.key) ? 'animate-enter' : ''}`}>
+                    <ToolGroup
+                      calls={entry.calls}
+                      open={expanded.has(entry.key)}
+                      onToggle={() => toggle(entry.key)}
+                      expandedKeys={expanded}
+                      onToggleKey={toggle}
+                    />
+                  </div>
+                </div>
+              );
+            }
+            if (entry.kind === 'agents_wait') {
+              return (
+                <div
+                  key={row.key}
+                  ref={virtualizer.measureElement}
+                  data-index={row.index}
+                  data-item-key={entry.key}
+                  style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    width: '100%',
+                    transform: `translateY(${row.start - virtualizer.options.scrollMargin}px)`,
+                  }}
+                >
+                  <div className="mx-auto w-full max-w-3xl px-4 py-1.5">
+                    <SubagentWait running={entry.running} />
+                  </div>
+                </div>
+              );
+            }
+            const item = entry;
             const live =
               item.kind === 'thought' && row.index === lastIndex && status === 'running' && item.endedAt === undefined;
             const answered = item.kind === 'permission' && answeredRequests.has(item.requestId);
@@ -154,7 +309,7 @@ export function MessageList({
                   transform: `translateY(${row.start - virtualizer.options.scrollMargin}px)`,
                 }}
               >
-                <div className="mx-auto w-full max-w-3xl px-4 py-2">
+                <div className={`mx-auto w-full max-w-3xl px-4 py-2 ${fresh.has(item.key) ? "animate-enter" : ""}`}>
                   <ItemRow
                     item={item}
                     live={live}
@@ -170,6 +325,7 @@ export function MessageList({
           })}
         </div>
       </div>
+      <PromptRail prompts={prompts} activeKey={activeKey} onJump={(index) => virtualizer.scrollToIndex(index, { align: 'start', behavior: 'smooth' })} />
       {!pinned && (
         <button
           type="button"

@@ -40,17 +40,17 @@ describe('openCodeDriver', () => {
 
   it('detects the installed version from --version output', async () => {
     const driver = createOpenCodeDriver({ PATH: binDirWith('echo "1.2.3"') });
-    expect(await driver.detect()).toEqual({ installed: true, version: '1.2.3', auth: 'unknown', signInHint: 'opencode acp --login' });
+    expect(await driver.detect()).toEqual({ installed: true, version: '1.2.3', auth: 'unknown', signInHint: 'opencode auth login' });
   });
 
   it('uses the first non-empty line of output as the version', async () => {
     const driver = createOpenCodeDriver({ PATH: binDirWith('printf "\\n  v2.0.1  \\nextra\\n"') });
-    expect(await driver.detect()).toEqual({ installed: true, version: 'v2.0.1', auth: 'unknown', signInHint: 'opencode acp --login' });
+    expect(await driver.detect()).toEqual({ installed: true, version: 'v2.0.1', auth: 'unknown', signInHint: 'opencode auth login' });
   });
 
   it('reports installed without a version when output is empty', async () => {
     const driver = createOpenCodeDriver({ PATH: binDirWith('exit 0') });
-    expect(await driver.detect()).toEqual({ installed: true, auth: 'unknown', signInHint: 'opencode acp --login' });
+    expect(await driver.detect()).toEqual({ installed: true, auth: 'unknown', signInHint: 'opencode auth login' });
   });
 
   it('reports not installed when the command exits non-zero', async () => {

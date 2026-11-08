@@ -15,7 +15,7 @@ export function createOpenCodeDriver(env: NodeJS.ProcessEnv = process.env): Agen
         installed: true,
         ...(label ? { version: label } : {}),
         auth: 'unknown' as const,
-        signInHint: 'opencode acp --login',
+        signInHint: 'opencode auth login',
       };
     },
   };

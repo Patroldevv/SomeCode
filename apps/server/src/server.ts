@@ -5,6 +5,8 @@ import type { AgentRegistry } from './agents/registry.ts';
 import { createApp } from './http/app.ts';
 import { attachWebSocket } from './http/ws.ts';
 import { SessionManager } from './sessions/manager.ts';
+import { readSettings } from './settings.ts';
+import { TerminalService } from './workspace/index.ts';
 import type { Store } from './store/store.ts';
 
 /** The server only ever listens on loopback. */
@@ -23,7 +25,8 @@ export type RunningServer = { port: number; url: string; close(): Promise<void> 
 
 export async function startServer(opts: StartServerOptions): Promise<RunningServer> {
   if (!opts.token) throw new Error('startServer requires a non-empty token');
-  const manager = new SessionManager({ store: opts.store, registry: opts.registry });
+  const manager = new SessionManager({ store: opts.store, registry: opts.registry, settings: () => readSettings(opts.store) });
+  const terminals = new TerminalService();
   let port = 0;
   const origin = () => `http://${HOST}:${port}`;
 
@@ -34,6 +37,7 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
     token: opts.token,
     origin,
     staticDir: opts.staticDir,
+    terminals,
   });
   const server = createAdaptorServer({ fetch: app.fetch, hostname: HOST }) as Server;
   const ws = attachWebSocket(server, { manager, token: opts.token, origin });
@@ -53,6 +57,7 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
     url: origin(),
     close() {
       closing ??= (async () => {
+        await terminals.closeAll();
         ws.close();
         const closed = new Promise<void>((resolve) => server.close(() => resolve()));
         server.closeAllConnections();

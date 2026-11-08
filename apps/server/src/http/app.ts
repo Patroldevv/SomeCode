@@ -1,14 +1,22 @@
 import { realpathSync, statSync } from 'node:fs';
 import { readFile, realpath, stat } from 'node:fs/promises';
-import { extname, isAbsolute, relative, resolve, sep } from 'node:path';
+import { extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { Hono, type Context } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { z } from 'zod';
 import { SomeCodeError } from '@somecode/protocol';
+import { createOptionsProbe, type OptionsProbe } from '../agents/optionsProbe.ts';
 import type { AgentRegistry } from '../agents/registry.ts';
+import { dataDir } from '../config.ts';
+import { createIconCache, type IconCache } from '../plugins/icons.ts';
+import { createPluginService, type PluginService } from '../plugins/service.ts';
+import { createUsageService, type UsageService } from '../usage/service.ts';
+import { approvalOption, trimModeOption } from '../permissions/approval.ts';
+import { defaultApprovalLevel, readSettings, settingsPatchSchema, updateSettings } from '../settings.ts';
 import type { SessionManager } from '../sessions/manager.ts';
 import type { Store } from '../store/store.ts';
 import { bearerToken, originAllowed, tokenMatches } from './auth.ts';
+import { mountWorkspaceRoutes, TerminalService } from '../workspace/index.ts';
 import { describeIssues, statusFor, toWireError } from './errors.ts';
 
 export type AppDeps = {
@@ -19,6 +27,15 @@ export type AppDeps = {
   /** The only Origin a browser may send: `http://127.0.0.1:<bound port>`. */
   origin: () => string;
   staticDir?: string;
+  terminals?: TerminalService;
+  /** Test seam: the cache behind `GET /api/agents/:id/options`. */
+  optionsProbe?: OptionsProbe;
+  /** Test seam: where `GET /api/usage` gets its figures. */
+  usage?: UsageService;
+  /** Test seam: plugins and skills (rooted at a throw-away home folder). */
+  plugins?: PluginService;
+  /** Test seam: the logo cache behind `GET /api/plugins/icon/:owner`. */
+  icons?: IconCache;
 };
 
 const MAX_BODY_BYTES = 1024 * 1024;
@@ -116,6 +133,10 @@ async function staticFile(root: string, rawPath: string): Promise<string | null>
 
 export function createApp(deps: AppDeps): Hono {
   const { store, registry, manager, token } = deps;
+  const probe = deps.optionsProbe ?? createOptionsProbe();
+  const usage = deps.usage ?? createUsageService(store);
+  const plugins = deps.plugins ?? createPluginService();
+  const icons = deps.icons ?? createIconCache(join(dataDir(process.env), 'icons'));
   const app = new Hono();
 
   app.onError((err, c) => {
@@ -144,7 +165,76 @@ export function createApp(deps: AppDeps): Hono {
     }),
   );
 
+  if(deps.terminals) mountWorkspaceRoutes(app, {store,registry,terminals:deps.terminals});
+
   app.get('/api/agents', async (c) => c.json(await agentStatuses(registry)));
+
+  // What the agent offers (model, mode, effort), so the new-chat screen can show it before a session exists.
+  app.get('/api/agents/:id/options', async (c) => {
+    const id = c.req.param('id');
+    const driver = registry.get(id);
+    if (!driver) throw new SomeCodeError('not_found', `unknown agent: ${id}`);
+    const path = c.req.query('path') ?? '';
+    if (!isAbsolute(path) || !isDirectory(resolve(path))) {
+      throw new SomeCodeError('bad_request', 'path must be an existing absolute directory');
+    }
+    const options = await probe.options(driver, realpathSync(resolve(path)));
+    // The same additions a live session makes: no self-approving modes, plus the access level (the default one).
+    return c.json({ options: [...options.map(trimModeOption), approvalOption(defaultApprovalLevel(readSettings(store)))] });
+  });
+
+  app.get('/api/settings', (c) => c.json(readSettings(store)));
+  app.put('/api/settings', async (c) => c.json(updateSettings(store, await readJson(c, settingsPatchSchema))));
+
+  // What each agent last reported about its subscription limits (only what it really sent).
+  app.get('/api/usage', async (c) => c.json(await usage.all(registry.list().map((d) => ({ id: d.id, label: d.label })), c.req.query('refresh') === '1')));
+
+  // Plugins (Claude's marketplace) and skills (SKILL.md folders) of the agents on this computer.
+  app.get('/api/plugins', async (c) => {
+    const overview = await plugins.overview();
+    // Fetch the logos in the background now, so they are ready by the time the page asks for them.
+    void icons.warm([...overview.plugins, ...overview.skills].flatMap((x) => (x.owner ? [x.owner] : [])));
+    return c.json(overview);
+  });
+  // A plugin's logo: the avatar of the GitHub account it lives under, fetched once and kept.
+  app.get('/api/plugins/icon/:owner', async (c) => {
+    const icon = await icons.get(c.req.param('owner'));
+    if (!icon) throw new SomeCodeError('not_found', 'no logo');
+    return new Response(icon.bytes as BodyInit, { headers: { 'content-type': icon.type, 'cache-control': 'private, max-age=86400' } });
+  });
+  // Remote services (MCP servers) that Claude can be connected to.
+  app.get('/api/services', async (c) => {
+    const list = await plugins.services();
+    void icons.warm(list.flatMap((s) => (s.owner ? [s.owner] : [])));
+    return c.json(list);
+  });
+  app.post('/api/services', async (c) => {
+    await plugins.connect(await readJson(c, z.object({ name: z.string().max(60), url: z.string().max(500), transport: z.string().max(10), token: z.string().max(600).optional() })));
+    return c.json({ ok: true }, 201);
+  });
+  app.delete('/api/services/:name', async (c) => {
+    await plugins.disconnect(c.req.param('name'));
+    return c.json({ ok: true });
+  });
+  app.post('/api/plugins/:action', async (c) => {
+    const action = c.req.param('action');
+    if (action !== 'install' && action !== 'uninstall' && action !== 'enable' && action !== 'disable') throw new SomeCodeError('not_found', 'not found');
+    const { id } = await readJson(c, z.object({ id: z.string().min(1).max(250) }));
+    await plugins.plugin(action, id);
+    return c.json({ ok: true });
+  });
+  app.post('/api/skills', async (c) => {
+    await plugins.addSkill(await readJson(c, z.object({ agent: z.string(), name: z.string().max(100), description: z.string().max(1000), content: z.string().max(200_000) })));
+    return c.json({ ok: true }, 201);
+  });
+  app.post('/api/skills/git', async (c) => {
+    const { agent, url } = await readJson(c, z.object({ agent: z.string(), url: z.string().max(300) }));
+    return c.json({ added: await plugins.addSkillsFromGit(agent, url) }, 201);
+  });
+  app.delete('/api/skills/:agent/:name', async (c) => {
+    await plugins.removeSkill(c.req.param('agent'), c.req.param('name'));
+    return c.json({ ok: true });
+  });
 
   app.get('/api/projects', (c) => c.json(store.listProjects()));
 
@@ -155,7 +245,7 @@ export function createApp(deps: AppDeps): Hono {
     if (!isDirectory(resolved)) {
       throw new SomeCodeError('bad_request', 'path is not an existing directory');
     }
-    return c.json(store.addProject({ name, path: resolved }), 201);
+    return c.json(store.addProject({ name, path: realpathSync(resolved) }), 201);
   });
 
   app.get('/api/projects/:id/sessions', (c) => {
@@ -164,16 +254,46 @@ export function createApp(deps: AppDeps): Hono {
     return c.json(store.listSessions(id));
   });
 
+  app.patch('/api/sessions/:id', async (c) => {
+    const { title } = await readJson(c, z.object({ title: z.string().min(1).max(400) }));
+    manager.renameSession(c.req.param('id'), title);
+    return c.json({ ok: true });
+  });
+
+  app.delete('/api/sessions/:id', async (c) => {
+    await manager.deleteSession(c.req.param('id'));
+    return c.json({ ok: true });
+  });
+
+  app.patch('/api/projects/:id', async (c) => {
+    const { name } = await readJson(c, z.object({ name: z.string().trim().min(1).max(200) }));
+    if (!store.renameProject(c.req.param('id'), name)) throw new SomeCodeError('not_found', 'unknown project');
+    return c.json({ ok: true });
+  });
+
+  app.delete('/api/projects/:id', async (c) => {
+    const id = c.req.param('id');
+    if (!store.getProject(id)) throw new SomeCodeError('not_found', `unknown project: ${id}`);
+    await manager.deleteProject(id, store.listSessions(id).map((s) => s.id));
+    return c.json({ ok: true });
+  });
+
   app.post('/api/sessions', async (c) => {
     const { projectId, agentId } = await readJson(c, sessionBody);
     return c.json(await manager.createSession(projectId, agentId), 201);
   });
 
+  app.post('/api/sessions/:id/resume', async c => c.json(await manager.resumeSession(c.req.param('id'))));
+  app.get('/api/sessions/:id/history', c => c.json(manager.history(c.req.param('id'), c.req.query('beforeSeq') === undefined ? undefined : Number(c.req.query('beforeSeq')), c.req.query('limit') === undefined ? undefined : Number(c.req.query('limit')))));
+
   app.get('/api/sessions/:id/events', (c) => {
     const id = c.req.param('id');
     const afterSeq = parseAfterSeq(c.req.query('afterSeq'));
     if (!store.getSession(id)) throw new SomeCodeError('not_found', `unknown session: ${id}`);
-    return c.json(store.eventsSince(id, afterSeq));
+    const events=store.eventsSince(id, afterSeq);
+    c.header('X-Next-After-Seq',String(events.at(-1)?.seq??afterSeq));
+    c.header('X-Last-Seq',String(store.lastSeq(id)));
+    return c.json(events);
   });
 
   if (deps.staticDir !== undefined) {

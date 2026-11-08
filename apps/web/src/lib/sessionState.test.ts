@@ -373,3 +373,18 @@ describe('config options', () => {
     expect(after.lastSeq).toBe(2);
   });
 });
+
+describe('permission requests that carry a plan or a question', () => {
+  it('keeps the plan text and the form, and stores the submitted answer on resolve', () => {
+    const fields = [{ key: 'stack', type: 'string' as const, title: 'Stack', required: true, options: [{ value: 'ts', label: 'TypeScript' }] }];
+    const open = run([
+      ev(1, { type: 'permission_request', requestId: 'r1', toolCallId: 't', title: 'Ready?', options: [], detail: '# Plan' }),
+      ev(2, { type: 'permission_request', requestId: 'r2', toolCallId: 't', title: 'Which?', options: [], form: { fields } }),
+    ]);
+    expect(open.items[0]).toMatchObject({ kind: 'permission', detail: '# Plan', resolved: false });
+    expect(open.items[1]).toMatchObject({ kind: 'permission', form: { fields }, resolved: false });
+    const done = run([ev(3, { type: 'permission_resolved', requestId: 'r2', outcome: 'selected', optionId: 'submit', answer: { stack: 'ts' } })], open);
+    expect(done.items[1]).toMatchObject({ resolved: true, answer: { stack: 'ts' } });
+    expect(done.items[0]).toMatchObject({ resolved: false });
+  });
+});

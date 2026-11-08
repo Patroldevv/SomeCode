@@ -23,6 +23,9 @@ const PERMISSION_OPTIONS = [
 ] as const;
 
 let model = 'fast';
+let effort = 'medium';
+/** UI demos only: `FAKE_EFFORT=1` reports a categorised model list plus a reasoning-effort option. */
+const WITH_EFFORT = process.env.FAKE_EFFORT === '1';
 let mode = 'default';
 let activeTurn: AbortController | null = null;
 
@@ -51,17 +54,28 @@ function modeOption(current: string): SessionConfigOption {
 }
 
 function configOptions(): SessionConfigOption[] {
+  const modelOption = {
+    id: 'model',
+    name: 'Model',
+    type: 'select',
+    ...(WITH_EFFORT ? { category: 'model' } : {}),
+    currentValue: model,
+    options: [
+      { value: 'fast', name: 'Fast' },
+      { value: 'smart', name: 'Smart' },
+    ],
+  } as unknown as SessionConfigOption;
+  if (!WITH_EFFORT) return [modelOption];
   return [
+    modelOption,
     {
-      id: 'model',
-      name: 'Model',
+      id: 'effort',
+      name: 'Effort',
       type: 'select',
-      currentValue: model,
-      options: [
-        { value: 'fast', name: 'Fast' },
-        { value: 'smart', name: 'Smart' },
-      ],
-    },
+      category: 'thought_level',
+      currentValue: effort,
+      options: ['low', 'medium', 'high', 'max'].map((value) => ({ value, name: value[0]!.toUpperCase() + value.slice(1) })),
+    } as unknown as SessionConfigOption,
   ];
 }
 
@@ -240,6 +254,11 @@ async function runTurn(client: AgentContext, signal: AbortSignal): Promise<StopR
     }
   }
 
+  // Some real agents echo the prompt back as a user message while the turn runs.
+  if (scenario === 'echo_user') {
+    await send({ sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'echo me' } });
+  }
+
   await send({
     sessionUpdate: 'agent_thought_chunk',
     content: { type: 'text', text: 'Thinking about it' },
@@ -274,6 +293,51 @@ async function runTurn(client: AgentContext, signal: AbortSignal): Promise<StopR
     if (outcome.outcome === 'cancelled') return 'cancelled';
   }
 
+  // The agent leaves plan mode: the plan travels as the tool call's text content.
+  if (scenario === 'plan_permission') {
+    const { outcome } = await client.request(methods.client.session.requestPermission, {
+      ...permission,
+      toolCall: { ...TOOL_CALL, title: 'Ready to code?', status: 'pending', content: [{ type: 'content', content: { type: 'text', text: '# Plan\n1. Do the thing' } }] },
+    });
+    if (outcome.outcome === 'cancelled') return 'cancelled';
+  }
+
+  // Context usage and a rate-limit report, as the Claude agent sends them with its usage updates.
+  if (scenario === 'usage') {
+    await send({ sessionUpdate: 'usage_update', used: 15000, size: 200000, _meta: { '_claude/rateLimit': { status: 'allowed', rateLimitType: 'five_hour', utilization: 0.24, resetsAt: 1900000000 } } } as SessionUpdate);
+    await send({ sessionUpdate: 'usage_update', used: 30000, size: 200000, _meta: { '_claude/rateLimit': { status: 'allowed', rateLimitType: 'seven_day', utilization: 47, resetsAt: 1900100000000 } } } as SessionUpdate);
+    return 'end_turn';
+  }
+
+  // A sub-agent: a Task call whose own tool calls arrive tagged with it, plus its chatter that must not show up.
+  if (scenario === 'subagent') {
+    await send({ sessionUpdate: 'tool_call', toolCallId: 'task1', title: 'Task: Explore the repo', kind: 'other', status: 'in_progress', rawInput: { subagent_type: 'explore', description: 'Explore the repo', prompt: 'Look around' } });
+    await send({ sessionUpdate: 'tool_call', toolCallId: 'child1', title: 'Read package.json', kind: 'read', status: 'completed', _meta: { claudeCode: { parentToolUseId: 'task1' } } } as SessionUpdate);
+    await send({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'sub-agent chatter' }, _meta: { claudeCode: { parentToolUseId: 'task1' } } } as SessionUpdate);
+    await send({ sessionUpdate: 'tool_call', toolCallId: 'oc1', title: 'grep', kind: 'search', status: 'completed', _meta: { 'opencode/child-session': { id: 'abc', parentID: 'p', depth: 1, title: 'Find usages' } } } as SessionUpdate);
+    await send({ sessionUpdate: 'tool_call_update', toolCallId: 'task1', status: 'completed' });
+    return 'end_turn';
+  }
+
+  // The agent asks the user a question (ACP form elicitation) and reports what it got.
+  if (scenario === 'ask_user') {
+    const answer = await client.request(methods.client.elicitation.create, {
+      mode: 'form',
+      sessionId: SESSION_ID,
+      message: 'Which stack?',
+      requestedSchema: {
+        type: 'object',
+        properties: {
+          stack: { type: 'string', title: 'Stack', oneOf: [{ const: 'ts', title: 'TypeScript' }, { const: 'py', title: 'Python' }] },
+          notes: { type: 'string', title: 'Notes' },
+        },
+        required: ['stack'],
+      },
+    });
+    await send({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: `answer: ${answer.action} ${JSON.stringify('content' in answer ? answer.content : null)}` } });
+    return 'end_turn';
+  }
+
   await send({
     sessionUpdate: 'tool_call',
     ...TOOL_CALL,
@@ -292,9 +356,17 @@ const connection = agent({ name: 'fake' })
     return {
       protocolVersion: PROTOCOL_VERSION,
       agentInfo: { name: 'fake-agent', version: '1.0.0' },
-      agentCapabilities: { loadSession: true },
+      agentCapabilities: { loadSession: scenario !== 'no_load' },
       authMethods: [{ id: 'fake-login', name: 'Fake login' }],
     };
+  })
+  .onRequest(methods.agent.session.load, async ({ params, client }) => {
+    if (params.sessionId !== 'durable-session' && params.sessionId !== SESSION_ID) throw RequestError.invalidParams(undefined, 'wrong saved session id');
+    if (scenario === 'load_error') throw RequestError.authRequired(undefined, 'please log in before resuming');
+    await sleep(50);
+    await client.notify(methods.client.session.update, { sessionId: params.sessionId, update: { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'already saved' } } });
+    await client.notify(methods.client.session.update, { sessionId: params.sessionId, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'historical reply' } } });
+    return {};
   })
   .onRequest(methods.agent.session.new, () => {
     if (scenario === 'new_auth_error') throw RequestError.authRequired(undefined, 'please log in');
@@ -337,6 +409,10 @@ const connection = agent({ name: 'fake' })
         });
       }, 30);
       return { configOptions: [modeOption(old), ...configOptions()] };
+    }
+    if (WITH_EFFORT && params.configId === 'effort' && typeof params.value === 'string') {
+      effort = params.value;
+      return { configOptions: configOptions() };
     }
     if (params.configId !== 'model' || typeof params.value !== 'string') {
       throw RequestError.invalidParams(undefined, `unknown config ${params.configId}`);

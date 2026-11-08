@@ -96,8 +96,8 @@ export function useStickToBottom({
     const movedUp = top < lastTopRef.current;
     const movedDown = top > lastTopRef.current;
     lastTopRef.current = top;
-    if (isNearBottom(el)) {
-      if (!pinnedRef.current && movedDown) setPinned(true);
+    if (movedDown && isNearBottom(el)) {
+      if (!pinnedRef.current) setPinned(true);
     } else if (!own && movedUp && pinnedRef.current) {
       setPinned(false);
     }
@@ -157,8 +157,20 @@ export function useStickToBottom({
 
   const jumpToLatest = useCallback(() => {
     setPinned(true);
-    scrollToEnd();
-  }, [scrollToEnd, setPinned]);
+    const el = scrollRef.current;
+    if (!el) return;
+    ownScrollRef.current = true;
+    if ('scrollTo' in el && typeof (el as HTMLElement).scrollTo === 'function') {
+      try {
+        (el as HTMLElement).scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+      } catch {
+        el.scrollTop = el.scrollHeight;
+      }
+    } else {
+      el.scrollTop = el.scrollHeight;
+    }
+    lastTopRef.current = el.scrollHeight;
+  }, [scrollRef, setPinned]);
 
   useLayoutEffect(() => {
     const added = itemCount - prevCountRef.current;

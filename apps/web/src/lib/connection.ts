@@ -84,6 +84,9 @@ export function createConnection(opts: ConnectionOptions): Connection {
         const { sessionId, seq } = message.stored;
         const known = subscriptions.get(sessionId);
         if (known !== undefined && seq > known) subscriptions.set(sessionId, seq);
+      } else if (message.type === 'snapshot') {
+        const known = subscriptions.get(message.sessionId);
+        if (known !== undefined && message.history.state.lastSeq > known) subscriptions.set(message.sessionId,message.history.state.lastSeq);
       }
       for (const cb of [...messageListeners]) cb(message);
     };
@@ -103,10 +106,12 @@ export function createConnection(opts: ConnectionOptions): Connection {
   return {
     send(message) {
       if (message.type === 'subscribe') subscriptions.set(message.sessionId, message.afterSeq);
+      if (message.type === 'unsubscribe') subscriptions.delete(message.sessionId);
       return transmit(message);
     },
     forget(sessionId) {
       subscriptions.delete(sessionId);
+      transmit({type:'unsubscribe',sessionId});
     },
     onMessage(cb) {
       messageListeners.add(cb);

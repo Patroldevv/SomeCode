@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createConnection, type SocketLike } from './connection.ts';
 import { bindSessionClient } from './sessionClient.ts';
 import { createSessionsStore, type Schedule } from './sessionsStore.ts';
+import {initialState} from './sessionState.ts';
 
 class FakeSocket implements SocketLike {
   readyState = 0;
@@ -55,6 +56,74 @@ function setup(restoredId: string | null, schedule?: Schedule) {
 }
 
 describe('bindSessionClient', () => {
+  it('does not redisplay an older page when its request completes after returning to recent', async () => {
+    const {conn,client:oldClient,store}=setup('s1');
+    oldClient.dispose();
+    store.setSnapshot('s1',{state:{...initialState(),lastSeq:50,items:[{kind:'user',key:'40',text:'recent'}]},beforeSeq:40});
+    let resolve!: (value: import('@somecode/protocol').SessionHistoryPage)=>void;
+    const client=bindSessionClient(conn,{store,restoring:{current:null},active:'s1',onError:()=>{},onRestoreFailed:()=>{},loadHistory:()=>new Promise((done)=>{resolve=done;})});
+    const pending=client.loadOlder('s1');
+    client.showRecent('s1');
+    expect(store.get('s1').historyLoading).toBe(false);
+    resolve({state:{...initialState(),lastSeq:50,items:[{kind:'user',key:'1',text:'old'}]},beforeSeq:null});
+    await pending;
+    expect(store.get('s1').olderItems??[]).toEqual([]);
+    client.dispose();
+  });
+  it('clears history loading when the connection binding is disposed', async () => {
+    const {conn,client:oldClient,store}=setup('s1');
+    oldClient.dispose();
+    store.setSnapshot('s1',{state:{...initialState(),lastSeq:50,items:[]},beforeSeq:40});
+    let resolve!: (value: import('@somecode/protocol').SessionHistoryPage)=>void;
+    const client=bindSessionClient(conn,{store,restoring:{current:null},active:'s1',onError:()=>{},onRestoreFailed:()=>{},loadHistory:()=>new Promise((done)=>{resolve=done;})});
+    const pending=client.loadOlder('s1');
+    expect(store.get('s1').historyLoading).toBe(true);
+    client.dispose();
+    expect(store.get('s1').historyLoading).toBe(false);
+    resolve({state:initialState(),beforeSeq:null});
+    await pending;
+  });
+  it('accepts a normalized snapshot then reconnects from its live cursor', () => {
+    const {socket,store,sockets}=setup('s1');
+    socket.open();
+    socket.receive({type:'snapshot',sessionId:'s1',history:{state:{...initialState(),lastSeq:500,items:[{kind:'user',key:'450',text:'recent'}]},beforeSeq:450}});
+    expect(store.get('s1').lastSeq).toBe(500);
+    expect(store.get('s1').olderBeforeSeq).toBe(450);
+    vi.useFakeTimers(); socket.drop(); vi.advanceTimersByTime(1000); vi.useRealTimers();
+    sockets[1]!.open();
+    expect(sockets[1]!.sent).toEqual([{type:'subscribe',sessionId:'s1',afterSeq:500}]);
+  });
+  it('loads one older page while keeping live events received during the request', async () => {
+    const {conn,client:oldClient,store,socket}=setup('s1');
+    oldClient.dispose();
+    store.setSnapshot('s1',{state:{...initialState(),lastSeq:50,items:[{kind:'user',key:'40',text:'recent'}]},beforeSeq:40});
+    let resolve!: (value: import('@somecode/protocol').SessionHistoryPage)=>void;
+    const client=bindSessionClient(conn,{store,restoring:{current:null},active:'s1',onError:()=>{},onRestoreFailed:()=>{},loadHistory:()=>new Promise((done)=>{resolve=done;})});
+    socket.open();
+    const pending=client.loadOlder('s1');
+    socket.receive(agentEvent('s1',51,'live'));
+    resolve({state:{...initialState(),lastSeq:50,items:[{kind:'user',key:'1',text:'old'}]},beforeSeq:null});
+    await pending;
+    expect(store.get('s1').lastSeq).toBe(51);
+    expect(store.get('s1').olderItems).toMatchObject([{text:'old'}]);
+    expect(store.get('s1').items).toMatchObject([{text:'recent'},{text:'live'}]);
+    client.dispose();
+  });
+  it('applies late tool patches that arrived while an older page was loading', async () => {
+    const {conn,client:oldClient,store,socket}=setup('s1');
+    oldClient.dispose();
+    store.setSnapshot('s1',{state:{...initialState(),lastSeq:50,items:[{kind:'user',key:'40',text:'recent'}]},beforeSeq:40});
+    let resolve!: (value: import('@somecode/protocol').SessionHistoryPage)=>void;
+    const client=bindSessionClient(conn,{store,restoring:{current:null},active:'s1',onError:()=>{},onRestoreFailed:()=>{},loadHistory:()=>new Promise((done)=>{resolve=done;})});
+    socket.open();
+    const pending=client.loadOlder('s1');
+    socket.receive({type:'event',stored:{sessionId:'s1',seq:51,ts:0,event:{type:'tool_call_update',id:'old-tool',patch:{status:'completed'}}}});
+    resolve({state:{...initialState(),lastSeq:50,items:[{kind:'tool',key:'1',id:'old-tool',title:'Read',toolKind:'read',content:[],status:'pending'}]},beforeSeq:null});
+    await pending;
+    expect(store.get('s1').olderItems).toMatchObject([{kind:'tool',status:'completed'}]);
+    expect(store.get('s1').lastSeq).toBe(51);
+    client.dispose();
+  });
   it('subscribes to the restored session from seq 0 once the socket opens', () => {
     const { socket } = setup('s1');
     expect(socket.sent).toEqual([]);
@@ -87,7 +156,9 @@ describe('bindSessionClient', () => {
     client.activate('s1');
     expect(socket.sent).toEqual([
       { type: 'subscribe', sessionId: 's1', afterSeq: 0 },
+      { type: 'unsubscribe', sessionId: 's1' },
       { type: 'subscribe', sessionId: 's2', afterSeq: 0 },
+      { type: 'unsubscribe', sessionId: 's2' },
       { type: 'subscribe', sessionId: 's1', afterSeq: 2 },
     ]);
   });

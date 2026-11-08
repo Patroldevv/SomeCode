@@ -8,13 +8,13 @@ function EntryStatus({ status }: { status: string }) {
     case 'completed':
       return (
         <Glyph label={t('plan.status.completed')} className="text-success">
-          <CheckIcon className="size-3.5" />
+          <CheckIcon className="animate-pop size-3.5" />
         </Glyph>
       );
     case 'in_progress':
       return (
         <Glyph label={t('plan.status.in_progress')} className="text-accent">
-          <HalfRingIcon className="size-3.5" />
+          <HalfRingIcon className="size-3.5 motion-safe:animate-[spin_2.4s_linear_infinite]" />
         </Glyph>
       );
     case 'pending':
@@ -33,7 +33,7 @@ function EntryStatus({ status }: { status: string }) {
 }
 
 const TEXT: Record<string, string> = {
-  completed: 'text-text-muted line-through decoration-text-muted/60',
+  completed: 'text-text-muted line-through decoration-text-muted/60 motion-safe:transition-colors',
   in_progress: 'text-text font-medium',
 };
 

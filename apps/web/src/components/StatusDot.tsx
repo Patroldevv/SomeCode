@@ -17,10 +17,19 @@ const COLOUR: Record<DotStatus, string> = {
   disconnected: 'bg-danger',
 };
 
-/** A session's status as a small coloured dot with an accessible name; the pulse respects reduced motion. */
-export function StatusDot({ state }: { state: SessionState }) {
+/** Statuses shown by softly fading text instead of a light. */
+export const isBusyStatus = (status: DotStatus): boolean => status === 'running' || status === 'permission';
+
+/**
+ * A session's status with an accessible name. `quiet` keeps the name for assistive tech but draws nothing for
+ * the calm and busy states (the caller fades the label text for those); a lost connection always shows red.
+ */
+export function StatusDot({ state, quiet = false }: { state: SessionState; quiet?: boolean }) {
   const status = dotStatus(state);
   const label = t(`session.status.${status}`);
+  if (quiet && status !== 'disconnected') {
+    return <span role="img" aria-label={label} data-status={status} className="sr-only" />;
+  }
   return (
     <span
       role="img"

@@ -83,6 +83,7 @@ function handleConnection(ws: WebSocket, manager: SessionManager): void {
     // A re-subscribe replaces the earlier subscription (only once the new one succeeded).
     unsubscribers.get(sessionId)?.();
     unsubscribers.set(sessionId, sub.unsubscribe);
+    if (sub.snapshot) send({ type: 'snapshot', sessionId, history: sub.snapshot });
     send({ type: 'subscribed', sessionId, lastSeq: sub.lastSeq });
     for (let i = 0; i < held.length; i++) send({ type: 'event', stored: held[i]! });
     held = null;
@@ -92,12 +93,16 @@ function handleConnection(ws: WebSocket, manager: SessionManager): void {
     switch (msg.type) {
       case 'subscribe':
         return subscribe(msg.sessionId, msg.afterSeq);
+      case 'unsubscribe':
+        unsubscribers.get(msg.sessionId)?.();
+        unsubscribers.delete(msg.sessionId);
+        return;
       case 'prompt':
-        return manager.prompt(msg.sessionId, msg.text);
+        return manager.prompt(msg.sessionId, msg.text, msg.images);
       case 'cancel':
         return manager.cancel(msg.sessionId);
       case 'permission_response':
-        return manager.respondPermission(msg.sessionId, msg.requestId, msg.optionId);
+        return manager.respondPermission(msg.sessionId, msg.requestId, msg.optionId, msg.answer);
       case 'set_config':
         if (typeof msg.value !== 'string') {
           throw new SomeCodeError('bad_request', 'value: config values must be strings');

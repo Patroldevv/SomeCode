@@ -1,9 +1,25 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { createConnection, type Connection, type ConnectionOptions, type ConnectionState } from '../lib/connection.ts';
-import { bindSessionClient, type SessionClient } from '../lib/sessionClient.ts';
-import type { SessionsStore } from '../lib/sessionsStore.ts';
+import type { SessionHistoryPage } from "@somecode/protocol";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
+import {
+  createConnection,
+  type Connection,
+  type ConnectionOptions,
+  type ConnectionState,
+} from "../lib/connection.ts";
+import { bindSessionClient, type SessionClient } from "../lib/sessionClient.ts";
+import type { SessionsStore } from "../lib/sessionsStore.ts";
 
 export type UseConnectionOptions = {
+  loadHistory?: (
+    sessionId: string,
+    beforeSeq?: number,
+  ) => Promise<SessionHistoryPage>;
   token: string;
   store: SessionsStore;
   /** The session remembered from before a reload: subscribed at once, quietly dropped if the server denies it. */
@@ -11,7 +27,7 @@ export type UseConnectionOptions = {
   onError: (code: string) => void;
   onRestoreFailed: (sessionId: string) => void;
   /** Test seam: a fake socket instead of the browser WebSocket. */
-  createSocket?: ConnectionOptions['createSocket'];
+  createSocket?: ConnectionOptions["createSocket"];
 };
 
 /**
@@ -23,10 +39,12 @@ export function useConnection(opts: UseConnectionOptions): {
   conn: Connection | null;
   state: ConnectionState;
   activate: (sessionId: string) => void;
+  loadOlder: (sessionId: string) => Promise<void>;
+  showRecent: (sessionId: string) => void;
 } {
   const { token, store } = opts;
   const [conn, setConn] = useState<Connection | null>(null);
-  const [state, setState] = useState<ConnectionState>('connecting');
+  const [state, setState] = useState<ConnectionState>("connecting");
   const restoring = useRef(opts.restoredId);
   /** The session to (re)subscribe whenever the connection is (re)created. */
   const active = useRef(opts.restoredId);
@@ -37,15 +55,18 @@ export function useConnection(opts: UseConnectionOptions): {
   });
 
   useEffect(() => {
-    const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const protocol = location.protocol === "https:" ? "wss:" : "ws:";
     const c = createConnection({
       url: `${protocol}//${location.host}/ws`,
       token,
-      ...(latest.current.createSocket ? { createSocket: latest.current.createSocket } : {}),
+      ...(latest.current.createSocket
+        ? { createSocket: latest.current.createSocket }
+        : {}),
     });
     const offState = c.onState(setState);
     const bound = bindSessionClient(c, {
       store,
+      loadHistory: (id, before) => latest.current.loadHistory!(id, before),
       restoring,
       active: active.current,
       onError: (code) => latest.current.onError(code),
@@ -70,5 +91,11 @@ export function useConnection(opts: UseConnectionOptions): {
     client.current?.activate(sessionId);
   }, []);
 
-  return { conn, state, activate };
+  return {
+    conn,
+    state,
+    activate,
+    loadOlder: (id) => client.current?.loadOlder(id) ?? Promise.resolve(),
+    showRecent: (id) => client.current?.showRecent(id),
+  };
 }

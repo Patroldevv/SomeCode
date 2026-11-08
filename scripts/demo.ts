@@ -3,6 +3,7 @@
 // plays the `rich` scenario, with a throw-away data directory. Never opens a browser.
 //
 //   npm run build -w apps/web && npm run demo [-- --port <0-65535>]
+//   DEMO_SCENARIO=ask_user|plan_permission|permission ... picks another scripted agent (default: rich).
 import { randomBytes } from 'node:crypto';
 import { mkdtempSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -46,7 +47,7 @@ try {
 const tempDir = mkdtempSync(join(tmpdir(), 'somecode-demo-'));
 const store = openStore(join(tempDir, 'somecode.db'));
 const token = randomBytes(24).toString('base64url');
-const registry = createRegistry([{ ...fakeDriver('rich', 'demo'), label: 'Demo agent' }]);
+const registry = createRegistry([{ ...fakeDriver(process.env.DEMO_SCENARIO ?? 'rich', 'demo'), label: 'Demo agent' }]);
 
 let server: RunningServer;
 try {

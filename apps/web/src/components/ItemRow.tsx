@@ -1,4 +1,5 @@
 import { memo } from 'react';
+import type { FormAnswer } from '@somecode/protocol';
 import type { Item } from '../lib/sessionState.ts';
 import { AgentMessage } from './items/AgentMessage.tsx';
 import { ErrorCard } from './items/ErrorCard.tsx';
@@ -15,7 +16,7 @@ export type ItemRowProps = {
   /** Only meaningful for a permission; `false` for every other kind. */
   answered: boolean;
   /** Must be referentially stable (the list passes a ref-backed callback). */
-  onRespond: (requestId: string, optionId: string) => void;
+  onRespond: (requestId: string, optionId: string | null, answer?: FormAnswer) => void;
   /** A tool card or finished thought the user opened; `false` for every other kind. Kept by the list. */
   expanded: boolean;
   /** Toggles `expanded` for an item key. Must be referentially stable. */
@@ -32,8 +33,15 @@ export type ItemRowProps = {
 export const ItemRow = memo(function ItemRow({ item, live, answered, onRespond, expanded, onToggle, signInHint }: ItemRowProps) {
   const toggle = () => onToggle(item.key);
   switch (item.kind) {
-    case 'user':
-      return <UserMessage text={item.text} local={item.local === true} />;
+    case 'user': {
+      const isSubagentContinue =
+        item.text.startsWith('Alt ajan') ||
+        item.text.startsWith('Sub-agent') ||
+        item.text.includes('incelemeyi tamamladı') ||
+        item.text.includes('completed their tasks');
+      if (isSubagentContinue) return null;
+      return <UserMessage text={item.text} images={item.images} local={item.local === true} />;
+    }
     case 'agent':
       return <AgentMessage text={item.text} />;
     case 'thought':

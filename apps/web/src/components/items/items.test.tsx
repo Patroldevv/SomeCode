@@ -62,11 +62,14 @@ const tool = (patch: Partial<ToolItem> = {}): ToolItem => ({
 });
 
 describe('ThinkingBlock', () => {
-  it('while live, shows the streaming text and has no toggle button', () => {
+  it('while live, is a folded "Thinking…" button that can be opened to follow the stream', async () => {
+    const user = userEvent.setup();
     render(<ThinkingBlock item={thought({ endedAt: undefined })} live />);
+    const button = screen.getByRole('button', { name: 'Thinking…' });
+    expect(button).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByText('pondering the codebase')).toBeNull();
+    await user.click(button);
     expect(screen.getByText('pondering the codebase')).toBeVisible();
-    expect(screen.getByText('Thinking…')).toBeInTheDocument();
-    expect(screen.queryByRole('button')).toBeNull();
   });
 
   it('when done, is a collapsed "Thought for 6 s" button that toggles the text', async () => {
@@ -338,6 +341,13 @@ describe('PlanChecklist', () => {
 });
 
 describe('messages and rows', () => {
+  it('UserMessage shows attached files as chips instead of their contents', () => {
+    render(<UserMessage text={'Please review\n\n<attached-file name="a.ts">\nconst secret = 1;\n</attached-file>'} />);
+    expect(screen.getByText('a.ts')).toBeInTheDocument();
+    expect(screen.getByText('Please review')).toBeInTheDocument();
+    expect(screen.queryByText(/secret/)).not.toBeInTheDocument();
+  });
+
   it('UserMessage shows the text as plain text', () => {
     render(<UserMessage text={'**not bold**\nsecond line'} />);
     expect(screen.getByText(/\*\*not bold\*\*/)).toBeInTheDocument();
@@ -352,7 +362,7 @@ describe('messages and rows', () => {
 
   it('ErrorCard is an alert with the code message only', () => {
     render(<ErrorCard code="disconnected" />);
-    expect(screen.getByRole('alert')).toHaveTextContent('The agent is not connected, so start a new session.');
+    expect(screen.getByRole('alert')).toHaveTextContent('The agent is disconnected. Resume this session to continue; your history is saved.');
   });
 
   it('ErrorCard falls back to the internal message for an unknown code', () => {
@@ -379,5 +389,117 @@ describe('ErrorCard sign-in hint', () => {
     expect(screen.queryByText('claude auth login')).not.toBeInTheDocument();
     rerender(<ErrorCard code="auth_required" />);
     expect(screen.queryByText(/Run this in a terminal/)).not.toBeInTheDocument();
+  });
+});
+
+describe('AgentMessage copy action', () => {
+  it('copies the raw markdown of the message', async () => {
+    const user = userEvent.setup();
+    const writeText = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue();
+    render(<AgentMessage text={'Hello **world**'} />);
+    await user.click(screen.getByRole('button', { name: 'Copy message' }));
+    expect(writeText).toHaveBeenCalledWith('Hello **world**');
+    expect(await screen.findByText('Copied')).toBeInTheDocument();
+  });
+});
+
+describe('PlanChecklist progress', () => {
+  it('shows the count as text, with no bar', () => {
+    render(
+      <PlanChecklist
+        plan={[
+          { content: 'a', status: 'completed', priority: 'high' },
+          { content: 'b', status: 'pending', priority: 'high' },
+        ]}
+      />,
+    );
+    expect(screen.getByText('1/2')).toBeInTheDocument();
+    expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
+  });
+});
+
+describe('PermissionCard plan and question', () => {
+  const base = { kind: 'permission' as const, key: 'p', requestId: 'r1', toolCallId: 't1', title: 'Ready to code?', options: [{ id: 'allow', name: 'Yes', kind: 'allow_once' }], resolved: false };
+
+  it('shows the plan text above the agent\'s own options', async () => {
+    const onRespond = vi.fn();
+    render(<PermissionCard item={{ ...base, detail: '# Plan\n\n1. Do the thing' }} answered={false} onRespond={onRespond} />);
+    expect(screen.getByRole('region', { name: 'Plan' })).toHaveTextContent('Do the thing');
+    await userEvent.click(screen.getByRole('button', { name: 'Yes' }));
+    expect(onRespond).toHaveBeenCalledWith('r1', 'allow');
+  });
+
+  const form = {
+    fields: [
+      { key: 'stack', type: 'string', title: 'Stack', required: true, options: [{ value: 'ts', label: 'TypeScript' }, { value: 'py', label: 'Python', description: 'snake' }] },
+      { key: 'tags', type: 'multi', title: 'Extras', required: false, options: [{ value: 'a', label: 'Alpha' }, { value: 'b', label: 'Beta' }] },
+      { key: 'notes', type: 'string', title: 'Notes', required: false },
+    ],
+  } as const;
+  const question = { ...base, title: 'Which stack?', options: [{ id: 'submit', name: 'Submit', kind: 'allow_once' }], form } as never;
+
+  it('submits a question only once its required answers are in, and sends the values', async () => {
+    const onRespond = vi.fn();
+    render(<PermissionCard item={question} answered={false} onRespond={onRespond} />);
+    const submit = screen.getByRole('button', { name: 'Send answer' });
+    expect(submit).toBeDisabled();
+    await userEvent.click(screen.getByRole('radio', { name: /TypeScript/ }));
+    await userEvent.click(screen.getByRole('checkbox', { name: /Beta/ }));
+    await userEvent.type(screen.getByRole('textbox', { name: 'Notes' }), '  fast ');
+    expect(submit).toBeEnabled();
+    await userEvent.click(submit);
+    expect(onRespond).toHaveBeenCalledWith('r1', 'submit', { stack: 'ts', tags: ['b'], notes: 'fast' });
+  });
+
+  it('skips a question with a null option, and shows the answer once resolved', async () => {
+    const onRespond = vi.fn();
+    const { rerender } = render(<PermissionCard item={question} answered={false} onRespond={onRespond} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Skip' }));
+    expect(onRespond).toHaveBeenCalledWith('r1', null);
+    rerender(<PermissionCard item={{ ...(question as object), resolved: true, answer: { stack: 'py' } } as never} answered onRespond={onRespond} />);
+    expect(screen.getByText('Answered')).toBeInTheDocument();
+    expect(screen.getByText('Python')).toBeInTheDocument();
+  });
+});
+
+describe('file operation titles and sub-agent groups', () => {
+  it('names the file a write created, while it runs and after', () => {
+    const write = (status: string) => tool({ title: 'write', toolKind: 'edit', status, rawInput: { filePath: '/p/src/new.ts', content: 'a\n' } });
+    const { rerender } = render(<ToolCard item={write('in_progress')} />);
+    expect(screen.getByText('Writing new.ts…')).toBeInTheDocument();
+    rerender(<ToolCard item={write('completed')} />);
+    expect(screen.getByText('Wrote new.ts')).toBeInTheDocument();
+  });
+
+  it('says "edited" for a change to an existing file, and counts more files', () => {
+    render(<ToolCard item={tool({ title: 'edit', toolKind: 'edit', rawInput: { filePath: 'a.ts', old_string: 'a\n', new_string: 'b\n' } })} />);
+    expect(screen.getByText('Edited a.ts')).toBeInTheDocument();
+  });
+
+  it('formats read_file naturally as Reading <name> while running and Read <name> when done', () => {
+    const read = (status: string) => tool({ title: 'read_file', toolKind: 'read', status, rawInput: { Path: '/p/src/app.ts' } });
+    const { rerender } = render(<ToolCard item={read('in_progress')} />);
+    expect(screen.getByText('Reading app.ts…')).toBeInTheDocument();
+    rerender(<ToolCard item={read('completed')} />);
+    expect(screen.getByText('Read app.ts')).toBeInTheDocument();
+  });
+
+  it('formats run_command naturally with toolSummary or CommandLine', () => {
+    const cmd1 = (status: string) => tool({ title: 'run_command', toolKind: 'execute', status, rawInput: { toolSummary: 'run typecheck' } });
+    const { rerender } = render(<ToolCard item={cmd1('in_progress')} />);
+    expect(screen.getByText('Running run typecheck…')).toBeInTheDocument();
+    rerender(<ToolCard item={cmd1('completed')} />);
+    expect(screen.getByText('Ran run typecheck')).toBeInTheDocument();
+
+    render(<ToolCard item={tool({ title: 'run_command', toolKind: 'execute', status: 'completed', rawInput: { CommandLine: 'npm test' } })} />);
+    expect(screen.getByText('Ran npm test')).toBeInTheDocument();
+  });
+
+  it('formats search tools with query', () => {
+    const search = (status: string) => tool({ title: 'search', toolKind: 'search', status, rawInput: { query: 'subagent' } });
+    const { rerender } = render(<ToolCard item={search('in_progress')} />);
+    expect(screen.getByText('Searching for subagent…')).toBeInTheDocument();
+    rerender(<ToolCard item={search('completed')} />);
+    expect(screen.getByText('Searched for subagent')).toBeInTheDocument();
   });
 });
