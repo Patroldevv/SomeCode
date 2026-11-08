@@ -8,8 +8,12 @@ import { fileURLToPath } from 'node:url';
 import { defaultRegistry } from '../apps/server/src/agents/registry.ts';
 import { dataDir } from '../apps/server/src/config.ts';
 import { pickBrowserCommand } from '../apps/server/src/launcher/browser.ts';
+import { useLoginPath } from '../apps/server/src/launcher/path.ts';
 import { startServer, type RunningServer } from '../apps/server/src/server.ts';
 import { openStore } from '../apps/server/src/store/store.ts';
+
+// Started from the application menu, the PATH is bare: take the login shell's and the usual agent folders.
+useLoginPath();
 
 const USAGE = 'usage: somecode [--no-open] [--browser] [--port <0-65535>]\n';
 
