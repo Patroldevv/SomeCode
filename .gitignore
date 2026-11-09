@@ -10,8 +10,6 @@
 *.log.*
 *.sig
 
-pkg/
-src/
 .superpowers/
 node_modules
 dist

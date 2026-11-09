@@ -97,3 +97,14 @@ describe('Antigravity invoke_subagent', () => {
     expect(group && group.kind === 'agents' && group.calls.map((c) => c.id)).toEqual(['a', 'b']);
   });
 });
+
+describe('nested hand-offs', () => {
+  it('keeps a hand-off made by a sub-agent as its own sub-agent with the parent noted, not as one of the parent\'s calls', () => {
+    const outer = tool('outer', { rawInput: { subagent_type: 'explore', description: 'Outer', prompt: 'x' } });
+    const inner = tool('inner', { parent: { id: 'outer' }, rawInput: { subagent_type: 'plan', description: 'Inner', prompt: 'y' } });
+    const read = tool('read1', { parent: { id: 'outer' }, title: 'Read a.ts', rawInput: { path: 'a.ts' } });
+    const agents = subagentsOf([outer, inner, read]);
+    expect(agents.map((a) => [a.id, a.parentId])).toEqual([['outer', undefined], ['inner', 'outer']]);
+    expect(agents[0]!.calls.map((c) => c.id)).toEqual(['read1']);
+  });
+});

@@ -9,7 +9,7 @@ import type {
 import type { EditedFile } from "../lib/edits.ts";
 import type { Subagent } from "../lib/subagents.ts";
 import { ChangesList } from "./ChangesList.tsx";
-import { SubagentsList } from "./SubagentsList.tsx";
+import { SubagentsView } from "./SubagentsView.tsx";
 import { CodeBlock } from "./CodeBlock.tsx";
 import { SymbolIcon } from "./SymbolIcon.tsx";
 import { TerminalPane } from "./TerminalPane.tsx";
@@ -202,7 +202,7 @@ export function WorkspacePanel({
         hidden={tab !== "agents"}
         className="min-h-0 flex-1 overflow-auto"
       >
-        <SubagentsList agents={subagents} />
+        <SubagentsView agents={subagents} />
       </div>
       <div
         role="tabpanel"

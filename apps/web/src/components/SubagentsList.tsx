@@ -26,24 +26,10 @@ export function SubagentStatus({ status }: { status: Subagent['status'] }) {
   );
 }
 
-function Entry({ agent, defaultOpen }: { agent: Subagent; defaultOpen: boolean }) {
-  const [open, setOpen] = useState(defaultOpen);
-  const id = useId();
+/** What a sub-agent was asked, what it did and what it reported. */
+export function AgentDetails({ agent, className = '' }: { agent: Subagent; className?: string }) {
   return (
-    <li className="changes-file">
-      <button type="button" aria-expanded={open} aria-controls={id} onClick={() => setOpen((v) => !v)} className="changes-head">
-        <ChevronIcon className={`size-3 shrink-0 text-text-muted motion-safe:transition-transform motion-safe:duration-300 ${open ? 'rotate-90' : ''}`} />
-        <span className="min-w-0 flex-1 text-left">
-          <span className="block truncate text-text">{agent.name}</span>
-          {agent.description && <span className="block truncate text-xs text-text-muted">{agent.description}</span>}
-        </span>
-        <span className="flex shrink-0 items-center gap-2 text-xs text-text-muted">
-          {agent.calls.length > 0 && <span>{plural('subagent.calls', agent.calls.length)}</span>}
-          <SubagentStatus status={agent.status} />
-        </span>
-      </button>
-      <Collapse id={id} open={open}>
-        <div className="flex flex-col gap-3 px-3 pb-3 pl-8 text-[13px]">
+    <div className={`flex flex-col gap-3 text-[13px] ${className}`}>
           {agent.prompt && (
             <section>
               <h4 className="mb-1 text-xs font-medium text-text-muted">{t('subagent.task')}</h4>
@@ -72,7 +58,28 @@ function Entry({ agent, defaultOpen }: { agent: Subagent; defaultOpen: boolean }
               <p className="max-h-60 overflow-auto whitespace-pre-wrap text-text [overflow-wrap:anywhere] bg-bg-subtle p-2 rounded text-xs">{agent.output}</p>
             </section>
           )}
-        </div>
+    </div>
+  );
+}
+
+function Entry({ agent, defaultOpen }: { agent: Subagent; defaultOpen: boolean }) {
+  const [open, setOpen] = useState(defaultOpen);
+  const id = useId();
+  return (
+    <li className="changes-file">
+      <button type="button" aria-expanded={open} aria-controls={id} onClick={() => setOpen((v) => !v)} className="changes-head">
+        <ChevronIcon className={`size-3 shrink-0 text-text-muted motion-safe:transition-transform motion-safe:duration-300 ${open ? 'rotate-90' : ''}`} />
+        <span className="min-w-0 flex-1 text-left">
+          <span className="block truncate text-text">{agent.name}</span>
+          {agent.description && <span className="block truncate text-xs text-text-muted">{agent.description}</span>}
+        </span>
+        <span className="flex shrink-0 items-center gap-2 text-xs text-text-muted">
+          {agent.calls.length > 0 && <span>{plural('subagent.calls', agent.calls.length)}</span>}
+          <SubagentStatus status={agent.status} />
+        </span>
+      </button>
+      <Collapse id={id} open={open}>
+        <AgentDetails agent={agent} className="px-3 pb-3 pl-8" />
       </Collapse>
     </li>
   );

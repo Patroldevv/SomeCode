@@ -11,6 +11,8 @@ export type Subagent = {
   output?: string;
   /** The tool calls the sub-agent made itself. */
   calls: ToolItem[];
+  /** The sub-agent that started this one (when the agent tags it so); absent for the main agent's own. */
+  parentId?: string;
 };
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -62,7 +64,10 @@ export function subagentsOf(items: readonly Item[]): Subagent[] {
   const handOffs: ToolItem[] = [];
   for (const item of items) {
     if (item.kind !== 'tool') continue;
-    if (item.parent) {
+    if (item.parent && isSubagentCall(item)) {
+      // A hand-off made by a sub-agent: a node under that sub-agent, not one of its plain calls.
+      handOffs.push(item);
+    } else if (item.parent) {
       const list = byParent.get(item.parent.id) ?? [];
       list.push(item);
       byParent.set(item.parent.id, list);
@@ -127,6 +132,7 @@ export function subagentsOf(items: readonly Item[]): Subagent[] {
       status,
       ...(effectiveOutput ? { output: effectiveOutput } : {}),
       calls,
+      ...(item.parent ? { parentId: item.parent.id } : {}),
     };
   });
 }
