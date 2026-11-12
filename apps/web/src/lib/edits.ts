@@ -45,6 +45,23 @@ export function editsOfSession(items: readonly Item[]): EditedFile[] {
   return collect(items, 0);
 }
 
+/** The files changed during a specific turn, started by the user message with `userKey`.
+ * If `untilEnd` is true, collects all changes made from that turn to the end of the conversation. */
+export function editsOfTurn(items: readonly Item[], userKey: string, untilEnd = false): EditedFile[] {
+  const start = items.findIndex((i) => i.kind === 'user' && i.key === userKey);
+  if (start < 0) return [];
+  let end = items.length;
+  if (!untilEnd) {
+    for (let i = start + 1; i < items.length; i++) {
+      if (items[i]!.kind === 'user') {
+        end = i;
+        break;
+      }
+    }
+  }
+  return collect(items, start, end);
+}
+
 export function totalStats(files: readonly EditedFile[]): { added: number; removed: number } {
   return files.reduce((sum, f) => ({ added: sum.added + f.added, removed: sum.removed + f.removed }), { added: 0, removed: 0 });
 }

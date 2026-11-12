@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react';
+import { cleanup, render, screen, within } from '@testing-library/react';
 import * as jsdiff from 'diff';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -9,6 +9,7 @@ import { DiffView } from './DiffView.tsx';
 import { ErrorCard } from './ErrorCard.tsx';
 import { PermissionCard } from './PermissionCard.tsx';
 import { PlanChecklist } from './PlanChecklist.tsx';
+import { ResearchControlProvider } from './ResearchContext.tsx';
 import { ThinkingBlock } from './ThinkingBlock.tsx';
 import { ToolCard } from './ToolCard.tsx';
 import { UnsupportedRow } from './UnsupportedRow.tsx';
@@ -104,6 +105,12 @@ describe('ThinkingBlock', () => {
 });
 
 describe('ToolCard', () => {
+  it('renders Gemini Scout badge and action title for somecode-scout tool calls', () => {
+    render(<ToolCard item={tool({ title: 'somecode-scout "scan auth routes"', rawInput: { command: 'somecode-scout "scan auth routes"' } })} />);
+    expect(screen.getByText('Gemini Scout')).toBeInTheDocument();
+    expect(screen.getByText(/Scout: scan auth routes/)).toBeInTheDocument();
+  });
+
   it('labels a failed tool with the i18n "Failed" status', () => {
     render(<ToolCard item={tool({ status: 'failed' })} />);
     expect(screen.getByRole('img', { name: 'Failed' })).toBeInTheDocument();
@@ -392,6 +399,28 @@ describe('ErrorCard sign-in hint', () => {
   });
 });
 
+describe('UserMessage actions', () => {
+  it('copies the prompt text and triggers undo callback when clicked', async () => {
+    const user = userEvent.setup();
+    const writeText = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue();
+    const onUndo = vi.fn();
+    const { rerender } = render(<UserMessage text="Sample user question" onUndo={onUndo} />);
+
+    expect(screen.getByText('Sample user question')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Copy message' }));
+    expect(writeText).toHaveBeenCalledWith('Sample user question');
+
+    const undoBtn = screen.getByRole('button', { name: 'Undo message and revert' });
+    expect(undoBtn).toBeInTheDocument();
+    await user.click(undoBtn);
+    expect(onUndo).toHaveBeenCalledTimes(1);
+
+    // If local is true, undo button is hidden
+    rerender(<UserMessage text="Sample user question" local onUndo={onUndo} />);
+    expect(screen.queryByRole('button', { name: 'Undo message and revert' })).not.toBeInTheDocument();
+  });
+});
+
 describe('AgentMessage copy action', () => {
   it('copies the raw markdown of the message', async () => {
     const user = userEvent.setup();
@@ -501,5 +530,84 @@ describe('file operation titles and sub-agent groups', () => {
     expect(screen.getByText('Searching for subagent…')).toBeInTheDocument();
     rerender(<ToolCard item={search('completed')} />);
     expect(screen.getByText('Searched for subagent')).toBeInTheDocument();
+  });
+});
+
+describe('tool images', () => {
+  const shotItem = (over: object = {}) => ({
+    kind: 'tool' as const,
+    key: 'b1',
+    id: 'b1',
+    title: 'mcp__somecode__browser_screenshot',
+    toolKind: 'other',
+    status: 'completed',
+    content: [
+      { type: 'text' as const, text: 'Screenshot of "Hello page" (http://localhost:5173/docs)' },
+      { type: 'image' as const, data: 'AAAA', mimeType: 'image/jpeg' },
+    ],
+    ...over,
+  });
+
+  it('shows a browser screenshot in the conversation, with which page it is, and opens it full size on a press', async () => {
+    render(<ToolCard item={shotItem()} />);
+    // Visible without opening the card.
+    expect(screen.getByText('Screenshot: Hello page')).toBeInTheDocument();
+    expect(screen.getByText('http://localhost:5173/docs')).toBeInTheDocument();
+    const thumb = screen.getByRole('img', { name: 'Hello page' });
+    expect(thumb).toHaveAttribute('src', 'data:image/jpeg;base64,AAAA');
+    await userEvent.click(screen.getByTitle('Open the picture'));
+    expect(screen.getByRole('dialog', { name: 'Hello page' })).toBeInTheDocument();
+    await userEvent.keyboard('{Escape}');
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it('describes the other browser tools in plain words', () => {
+    const open = { ...shotItem(), title: 'mcp__somecode__browser_open', content: [], rawInput: { url: 'http://localhost:5173/' } };
+    const { rerender } = render(<ToolCard item={open} />);
+    expect(screen.getByText('Opened localhost:5173')).toBeInTheDocument();
+    rerender(<ToolCard item={{ ...open, title: 'mcp__somecode__browser_click', rawInput: { ref: 12 } }} />);
+    expect(screen.getByText('Clicked element 12')).toBeInTheDocument();
+    rerender(<ToolCard item={{ ...open, title: 'mcp__somecode__browser_snapshot', rawInput: {} }} />);
+    expect(screen.getByText('Read the page')).toBeInTheDocument();
+  });
+});
+
+describe('/research messages', () => {
+  it('shows a message that starts with /research with a deep research badge and without the command', () => {
+    render(<UserMessage text="/research How do CRDTs merge text?" />);
+    expect(screen.getByText('Deep research')).toBeInTheDocument();
+    expect(screen.getByText('How do CRDTs merge text?')).toBeInTheDocument();
+    expect(screen.queryByText(/\/research/)).not.toBeInTheDocument();
+  });
+
+  it('knows /deep-research too, and does not mistake a longer word for it', () => {
+    const { unmount } = render(<UserMessage text="/deep-research Compare Wayland shells" />);
+    expect(screen.getByText('Deep research')).toBeInTheDocument();
+    expect(screen.getByText('Compare Wayland shells')).toBeInTheDocument();
+    unmount();
+    render(<UserMessage text="/researcher is not a command" />);
+    expect(screen.queryByText('Deep research')).not.toBeInTheDocument();
+  });
+});
+
+describe('saving a research report', () => {
+  const long = `# Quickshell survey\n\n${'A finding with a source [1]. '.repeat(50)}`;
+  it('offers a Markdown download for a long answer in a research chat, and only there', () => {
+    const { unmount } = render(
+      <ResearchControlProvider value={{ running: false, researching: true }}>
+        <AgentMessage text={long} />
+      </ResearchControlProvider>,
+    );
+    expect(screen.getByRole('button', { name: 'Save report (.md)' })).toBeInTheDocument();
+    unmount();
+    render(
+      <ResearchControlProvider value={{ running: false, researching: true }}>
+        <AgentMessage text="Short answer." />
+      </ResearchControlProvider>,
+    );
+    expect(screen.queryByRole('button', { name: 'Save report (.md)' })).not.toBeInTheDocument();
+    cleanup();
+    render(<AgentMessage text={long} />);
+    expect(screen.queryByRole('button', { name: 'Save report (.md)' })).not.toBeInTheDocument();
   });
 });

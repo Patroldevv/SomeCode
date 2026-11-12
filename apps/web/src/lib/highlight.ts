@@ -2,6 +2,8 @@
 // lazily created singleton. Shiki itself, the engine, every grammar and both themes are loaded on demand
 // through dynamic `import()`, so each lands in its own chunk and the main bundle carries none of them.
 import type { HighlighterCore, LanguageInput, ThemeInput } from 'shiki/core';
+import { getClientSettings } from './settings.ts';
+import { shikiThemeFor } from './shikiThemes.ts';
 
 /** One rendered line: consecutive tokens whose texts join back to the source line. */
 export type HighlightedLine = { text: string; color?: string }[];
@@ -37,10 +39,6 @@ register('cpp', () => import('shiki/langs/cpp.mjs'), 'c++', 'cc', 'cxx', 'hpp');
 register('java', () => import('shiki/langs/java.mjs'));
 register('toml', () => import('shiki/langs/toml.mjs'));
 
-const THEMES = {
-  dark: ['github-dark', (): ThemeInput => import('shiki/themes/github-dark.mjs')],
-  light: ['github-light', (): ThemeInput => import('shiki/themes/github-light.mjs')],
-} as const;
 
 /** Blocks larger than this stay plain: tokenising runs on the main thread. */
 const MAX_CODE_LENGTH = 100_000;
@@ -79,9 +77,11 @@ function once(key: string, load: () => Promise<void>): Promise<void> {
   return pending;
 }
 
-function currentTheme(): (typeof THEMES)[keyof typeof THEMES] {
+/** The theme for the page's light or dark mode, as chosen in the settings. */
+function currentTheme(): [name: string, load: () => ThemeInput] {
   const light = typeof document !== 'undefined' && document.documentElement.dataset['theme'] === 'light';
-  return light ? THEMES.light : THEMES.dark;
+  const { codeThemeLight, codeThemeDark } = getClientSettings();
+  return shikiThemeFor(light ? codeThemeLight : codeThemeDark, light);
 }
 
 /**

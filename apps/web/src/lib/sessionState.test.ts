@@ -388,3 +388,45 @@ describe('permission requests that carry a plan or a question', () => {
     expect(done.items[0]).toMatchObject({ resolved: false });
   });
 });
+
+describe('research plan progress', () => {
+  const asked: NormalizedEvent = { type: 'permission_request', requestId: 'r', toolCallId: 'r', title: 'Survey', options: [{ id: 'start', name: 'Start', kind: 'allow_once' }], plan: { steps: ['a', 'b'] } };
+  const entries = (statuses: string[]) => ({ type: 'plan' as const, entries: ['a', 'b'].map((content, i) => ({ content, status: statuses[i]!, priority: 'medium' })) });
+
+  it('shows the steps of a started research plan on its card, not as a second checklist', () => {
+    const state = run([
+      ev(1, asked),
+      ev(2, { type: 'permission_resolved', requestId: 'r', outcome: 'selected', optionId: 'start', answer: { steps: ['a', 'b'] } }),
+      ev(3, entries(['in_progress', 'pending'])),
+      ev(4, entries(['completed', 'in_progress'])),
+    ]);
+    expect(state.plan).toBeNull();
+    const card = state.items.find((i) => i.kind === 'permission');
+    expect(card).toMatchObject({ progress: [{ content: 'a', status: 'completed' }, { content: 'b', status: 'in_progress' }] });
+  });
+
+  it('keeps the agent\'s own plan as the checklist when it is not the research plan', () => {
+    const state = run([
+      ev(1, asked),
+      ev(2, { type: 'permission_resolved', requestId: 'r', outcome: 'selected', optionId: 'start', answer: { steps: ['a', 'b'] } }),
+      ev(3, { type: 'plan', entries: [{ content: 'write code', status: 'pending', priority: 'medium' }] }),
+    ]);
+    expect(state.plan).toEqual([{ content: 'write code', status: 'pending', priority: 'medium' }]);
+  });
+});
+
+describe('verification cards', () => {
+  const check = (status: 'pending' | 'running' | 'passed' | 'failed') => ({ name: 'Test', command: 'npm test', status });
+  it('updates one card as the checks go on instead of adding a card per event', () => {
+    const state = run([
+      ev(1, { type: 'agent_message', text: 'done' }),
+      ev(2, { type: 'verification', id: 'a', status: 'running', round: 0, checks: [check('running')] }),
+      ev(3, { type: 'verification', id: 'a', status: 'failed', round: 0, checks: [{ ...check('failed'), output: 'boom' }], willFix: true }),
+      ev(4, { type: 'verification', id: 'b', status: 'passed', round: 1, checks: [check('passed')] }),
+    ]);
+    const cards = state.items.filter((i) => i.kind === 'verification');
+    expect(cards).toHaveLength(2);
+    expect(cards[0]).toMatchObject({ id: 'a', status: 'failed', willFix: true, checks: [{ output: 'boom' }] });
+    expect(cards[1]).toMatchObject({ id: 'b', round: 1, status: 'passed' });
+  });
+});

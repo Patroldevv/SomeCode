@@ -271,4 +271,14 @@ describe('Composer', () => {
       await screen.findByText(/big\.txt is too large/);
     });
   });
+
+  it('offers /verify only inside a chat that exists', async () => {
+    const { unmount } = render(<Host />);
+    await userEvent.type(box(), '/ver');
+    expect(screen.queryByText('/verify')).not.toBeInTheDocument();
+    unmount();
+    render(<Host inChat />);
+    await userEvent.type(box(), '/ver');
+    expect(screen.getByText('/verify')).toBeInTheDocument();
+  });
 });

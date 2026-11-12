@@ -1,86 +1,132 @@
 import type { CSSProperties } from "react";
+import {
+  ArrowUp,
+  ArrowUpRight,
+  AtSign,
+  BookOpen,
+  Bot,
+  Check,
+  ChevronRight,
+  CircleAlert,
+  CircleCheck,
+  CircleX,
+  Code,
+  Compass,
+  Copy,
+  Diff,
+  Ellipsis,
+  File,
+  Folder,
+  FolderOpen,
+  Gauge,
+  Globe,
+  Hand,
+  House,
+  Image,
+  Layers,
+  Lock,
+  Mic,
+  MessageSquare,
+  Moon,
+  PanelRight,
+  Pencil,
+  Plus,
+  Puzzle,
+  RefreshCw,
+  Search,
+  Settings,
+  ShieldCheck,
+  Sparkles,
+  Square,
+  Sun,
+  Target,
+  Terminal,
+  Trash2,
+  Undo2,
+  UserRound,
+  X,
+  Zap,
+  Telescope,
+  ListChecks,
+  Clock,
+  Brain,
+  Download,
+  Upload,
+  CalendarClock,
+  History,
+  type LucideIcon,
+} from "lucide-react";
 
-const paths = {
-  plus: "M12 5v14M5 12h14",
-  search: "m21 21-4.4-4.4M19 10.5a8.5 8.5 0 1 1-17 0 8.5 8.5 0 0 1 17 0Z",
-  folder:
-    "M3 7V5a1 1 0 0 1 1-1h5l2 3h9a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1ZM3 7h8",
-  file: "M14 2H5v20h14V7Zm0 0v6h5M8 12h8M8 16h6",
-  terminal: "m5 7 5 5-5 5m8 0h6",
-  panel: "M3 4h18v16H3Zm12 0v16",
-  close: "m6 6 12 12M6 18 18 6",
-  chevron: "m9 5 7 7-7 7",
-  up: "m5 12 7-7 7 7M12 5v14",
-  arrow: "M12 19V5m-6 6 6-6 6 6",
-  moon: "M20.9 13a9 9 0 0 1-10-10A9 9 0 1 0 20.9 13Z",
-  sun: "M12 3V1m0 22v-2M3 12H1m22 0h-2M4 4l2 2m12 12 2 2M4 20l2-2M18 6l2-2M16 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0Z",
-  refresh:
-    "M20 7V3m0 4h-4M4 17v4m0-4h4M5 8a8 8 0 0 1 13-3l2 2M4 17l2 2a8 8 0 0 0 13-3",
-  spark:
-    "M12 2c0 4.5-3.5 8-8 8 4.5 0 8 3.5 8 8 0-4.5 3.5-8 8-8-4.5 0-8-3.5-8-8zM19 15c0 2-1.5 3.5-3.5 3.5 2 0 3.5 1.5 3.5 3.5 0-2 1.5-3.5 3.5-3.5-2 0-3.5-1.5-3.5-3.5z",
-  bot: "M12 8V4m0 0H9m3 0h3M3 9a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2ZM9 13v.01M15 13v.01",
-  agent:
-    "M12 2a4 4 0 0 1 4 4v1a4 4 0 0 1-8 0V6a4 4 0 0 1 4-4ZM6 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2",
-  chat: "M21 11.5a8.4 8.4 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.4 8.4 0 0 1 3.8-.9h.5a8.5 8.5 0 0 1 8 8v.5Z",
-  check: "m5 12 4 4L19 6",
-  checkCircle: "M22 11.08V12a10 10 0 1 1-5.93-9.14M22 4 12 14.01l-3-3",
-  xCircle: "M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20ZM15 9l-6 6M9 9l6 6",
-  at: "M16 8v7a3 3 0 0 0 6 0v-3a10 10 0 1 0-4 8M16 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0Z",
-  lock: "M5 10h14v11H5Zm3 0V6a4 4 0 0 1 8 0v4",
-  code: "m8 7-5 5 5 5m8-10 5 5-5 5m-3-14-2 18",
-  edit: "M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z",
-  stop: "M8 8h8v8H8Z",
-  copy: "M9 9h11v11H9ZM5 15H4V4h11v1",
-  folderOpen:
-    "M3 19V5a1 1 0 0 1 1-1h5l2 3h8a1 1 0 0 1 1 1v2M3 19l2.6-8.2A1 1 0 0 1 6.6 10H21a1 1 0 0 1 1 1.3L19.6 18.4A1 1 0 0 1 18.6 19Z",
-  gear: "M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z",
-  hand: "M8 12V5.5a1.5 1.5 0 0 1 3 0V11m0-1V4a1.5 1.5 0 0 1 3 0v6m0-4.5a1.5 1.5 0 0 1 3 0V12m0-3.5a1.5 1.5 0 0 1 3 0V15a7 7 0 0 1-7 7h-1a7 7 0 0 1-5.6-2.8L4 15.5a1.6 1.6 0 0 1 2.6-1.9L8 15.5",
-  shield:
-    "M12 3 4.5 6v5.5c0 4.4 3.1 8.2 7.5 9.5 4.4-1.3 7.5-5.1 7.5-9.5V6ZM9 11l2 2 4-4",
-  alert: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18ZM12 8v5M12 16.5v.01",
-  ring: "M12 21a9 9 0 1 1 0-18 9 9 0 0 1 0 18ZM12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z",
-  puzzle: "M10 4a2 2 0 1 1 4 0v1h4a1 1 0 0 1 1 1v4h-1a2 2 0 1 0 0 4h1v4a1 1 0 0 1-1 1h-4v-1a2 2 0 1 0-4 0v1H6a1 1 0 0 1-1-1v-4h1a2 2 0 1 0 0-4H5V6a1 1 0 0 1 1-1h4Z",
-  home: "M3 11 12 3l9 8M5 9.5V20h5v-6h4v6h5V9.5",
-  dots: "M5 12h.01M12 12h.01M19 12h.01",
-  diff: "M12 8v8M8 12h8M4 4h16v16H4Z",
-  undo: "M9 14 4 9l5-5M4 9h10a6 6 0 0 1 0 12h-3",
-  external: "M7 17 17 7M8 7h9v9",
-  mic: "M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3ZM19 10v2a7 7 0 0 1-14 0v-2M12 19v3M8 22h8",
-  image:
-    "M3 5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2ZM3 16l5-5c.6-.6 1.5-.6 2.1 0l7 7M14 14l1-1c.6-.6 1.5-.6 2.1 0l3.9 3.9M8.5 10a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3Z",
-  goal: "M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20ZM12 18a6 6 0 1 0 0-12 6 6 0 0 0 0 12ZM12 14a2 2 0 1 0 0-4 2 2 0 0 0 0 4Z",
-  trash:
-    "M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M10 11v6M14 11v6",
-  compass:
-    "M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20ZM16.24 7.76l-2.12 6.36-6.36 2.12 2.12-6.36 6.36-2.12Z",
-  globe:
-    "M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20ZM2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10Z",
-  layers: "m12 2 10 5-10 5L2 7l10-5ZM2 17l10 5 10-5M2 12l10 5 10-5",
-  book: "M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1-2.5-2.5ZM6 6h10M6 10h10",
-};
+/** The names the interface uses, each drawn with an icon of the Lucide set. */
+const icons = {
+  plus: Plus,
+  search: Search,
+  folder: Folder,
+  file: File,
+  terminal: Terminal,
+  panel: PanelRight,
+  close: X,
+  chevron: ChevronRight,
+  up: ArrowUp,
+  arrow: ArrowUp,
+  moon: Moon,
+  sun: Sun,
+  refresh: RefreshCw,
+  spark: Sparkles,
+  bot: Bot,
+  agent: UserRound,
+  chat: MessageSquare,
+  check: Check,
+  checkCircle: CircleCheck,
+  xCircle: CircleX,
+  at: AtSign,
+  lock: Lock,
+  code: Code,
+  edit: Pencil,
+  stop: Square,
+  copy: Copy,
+  folderOpen: FolderOpen,
+  gear: Settings,
+  hand: Hand,
+  shield: ShieldCheck,
+  alert: CircleAlert,
+  ring: Gauge,
+  puzzle: Puzzle,
+  home: House,
+  dots: Ellipsis,
+  diff: Diff,
+  undo: Undo2,
+  external: ArrowUpRight,
+  mic: Mic,
+  image: Image,
+  goal: Target,
+  trash: Trash2,
+  compass: Compass,
+  globe: Globe,
+  layers: Layers,
+  book: BookOpen,
+  bolt: Zap,
+  research: Telescope,
+  steps: ListChecks,
+  clock: Clock,
+  brain: Brain,
+  download: Download,
+  upload: Upload,
+  schedule: CalendarClock,
+  history: History,
+} satisfies Record<string, LucideIcon>;
+
+export type SymbolName = keyof typeof icons;
 
 export function SymbolIcon({
   name,
   className = "",
   style,
 }: {
-  name: keyof typeof paths;
+  name: SymbolName;
   className?: string;
   style?: CSSProperties;
 }) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.6"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-      className={`size-4 shrink-0 ${className}`}
-      style={style}
-    >
-      <path d={paths[name]} />
-    </svg>
-  );
+  const Icon = icons[name];
+  return <Icon aria-hidden="true" strokeWidth={1.75} className={`size-4 shrink-0 ${className}`} style={style} data-icon={name} />;
 }

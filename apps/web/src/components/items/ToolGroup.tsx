@@ -40,7 +40,7 @@ export function ToolGroup({
           {running ? (
             <span
               aria-hidden="true"
-              className="size-3.5 shrink-0 rounded-full border-2 border-accent border-t-transparent animate-spin"
+              className="spin-arc size-3.5"
             />
           ) : (
             <ToolStatus status={summary.status} />

@@ -67,4 +67,19 @@ describe('highlightTokens', () => {
     await highlightTokens('{"b": 2}', 'json');
     expect(creations.count).toBe(1);
   });
+
+  it('colours with the theme chosen in the settings (node has no page, so the dark one)', { timeout: 20_000 }, async () => {
+    const { updateClientSettings } = await import('./settings.ts');
+    const code = 'const a = "x";';
+    updateClientSettings({ codeThemeDark: 'github-dark' });
+    const plain = await highlightTokens(code, 'ts');
+    updateClientSettings({ codeThemeDark: 'dracula' });
+    const dracula = await highlightTokens(code, 'ts');
+    updateClientSettings({ codeThemeDark: 'claude-dark' });
+    const claude = await highlightTokens(code, 'ts');
+    const colors = (lines: typeof plain) => lines!.flat().map((t) => ('color' in t ? t.color : undefined));
+    expect(colors(dracula)).not.toEqual(colors(plain));
+    expect(colors(claude)).not.toEqual(colors(plain));
+    expect(colors(claude).filter(Boolean).length).toBeGreaterThan(0);
+  });
 });

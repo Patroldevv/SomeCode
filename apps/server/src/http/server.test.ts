@@ -18,7 +18,7 @@ const TOKEN = 'test-token-0123456789abcdef';
 
 let store: Store;
 let dir: string;
-let server: { port: number; url: string; close(): Promise<void> } | undefined;
+let server: { port: number; url: string; launchCode(): string; close(): Promise<void> } | undefined;
 const clients: WebSocket[] = [];
 
 beforeEach(() => {
@@ -179,6 +179,20 @@ async function createSession(): Promise<string> {
 }
 
 describe('authentication and origin (a)', () => {
+  it('trades a launch code for the token (a few times, then never), and nothing else works without the token', async () => {
+    const running = await start();
+    const code = running.launchCode();
+    const post = (body: unknown) => api('/api/launch', { method: 'POST', body, token: null });
+    const ok = await post({ code });
+    expect(ok.status).toBe(200);
+    expect(ok.body).toEqual({ token: TOKEN });
+    expect((await post({ code })).status).toBe(200);
+    expect((await post({ code })).status).toBe(200);
+    expect((await post({ code })).status).toBe(401);
+    expect((await post({ code: 'not-a-real-code' })).status).toBe(401);
+    expect((await api('/api/projects', { token: null })).status).toBe(401);
+  });
+
   it('rejects REST calls without or with a wrong token with 401', async () => {
     await start();
     for (const token of [null, '', 'wrong', `${TOKEN.slice(0, -1)}x`, `${TOKEN}x`]) {
@@ -307,6 +321,125 @@ describe('REST (b)', () => {
       { id: 'fake', label: 'Fake agent', installed: true, version: '0' },
       { id: 'broken', label: 'Fake agent', installed: false },
     ]);
+  });
+});
+
+describe('agent tools: memory, scheduled tasks, search', () => {
+  async function project(): Promise<string> {
+    await start([fakeDriver('basic')]);
+    const res = await api('/api/projects', { method: 'POST', body: { name: 'shop', path: dir } });
+    expect(res.status).toBe(201);
+    return res.body.id as string;
+  }
+
+  it('keeps project memory by project, by folder inside it and by chat, without duplicates', async () => {
+    const id = await project();
+    const sub = join(dir, 'src');
+    mkdirSync(sub);
+    const added = await api('/api/memory', { method: 'POST', body: { cwd: sub, text: 'Use pnpm, not npm' } });
+    expect(added.status).toBe(201);
+    expect((await api('/api/memory', { method: 'POST', body: { projectId: id, text: 'use PNPM, not npm' } })).body.duplicate).toBe(true);
+    const list = await api(`/api/memory?projectId=${id}`);
+    expect(list.body).toMatchObject({ project: 'shop', memories: [{ text: 'Use pnpm, not npm' }] });
+    expect((await api('/api/memory?cwd=/nowhere')).status).toBe(404);
+    expect((await api('/api/memory', { method: 'POST', body: { projectId: id, text: 'x' } })).status).toBe(400);
+    expect((await api(`/api/memory/${added.body.memory.id}`, { method: 'DELETE' })).status).toBe(200);
+    expect((await api(`/api/memory/${added.body.memory.id}`, { method: 'DELETE' })).status).toBe(404);
+  });
+
+  it('serves a picture an agent mentioned by path, only from places agents work in and only pictures', async () => {
+    const id = await project();
+    expect(id).toBeTruthy();
+    const png = join(dir, 'shot.png');
+    writeFileSync(png, Buffer.from('89504e470d0a1a0a', 'hex'));
+    writeFileSync(join(dir, 'notes.txt'), 'x');
+    const ok = await api(`/api/local-image?path=${encodeURIComponent(png)}`);
+    expect(ok.status).toBe(200);
+    expect(ok.headers['content-type']).toBe('image/png');
+    expect((await api(`/api/local-image?path=${encodeURIComponent(`file://${png}`)}`)).status).toBe(200);
+    expect((await api(`/api/local-image?path=${encodeURIComponent(join(dir, 'notes.txt'))}`)).status).toBe(400);
+    expect((await api(`/api/local-image?path=${encodeURIComponent(join(dir, 'gone.png'))}`)).status).toBe(404);
+    expect((await api('/api/local-image?path=%2Fetc%2Fhosts')).status).toBe(400);
+    expect((await api(`/api/local-image?path=${encodeURIComponent(png)}`, { token: null })).status).toBe(401);
+  });
+
+  it('keeps a project\'s checks, suggests them from package.json and refuses bad ones', async () => {
+    const id = await project();
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ scripts: { typecheck: 'tsc -b', test: 'vitest run' } }));
+    const first = await api(`/api/projects/${id}/verify`);
+    expect(first.body.config).toMatchObject({ enabled: true, autoFix: true, maxFixes: 2, checks: [] });
+    expect(first.body.suggested).toEqual([{ name: 'Typecheck', command: 'npm run typecheck' }, { name: 'Test', command: 'npm test' }]);
+    const config = { enabled: true, autoFix: false, maxFixes: 1, checks: first.body.suggested };
+    expect((await api(`/api/projects/${id}/verify`, { method: 'PUT', body: config })).status).toBe(200);
+    expect((await api(`/api/projects/${id}/verify`)).body.config).toEqual(config);
+    expect((await api(`/api/projects/${id}/verify`, { method: 'PUT', body: { ...config, maxFixes: 9 } })).status).toBe(400);
+    expect((await api(`/api/projects/${id}/verify`, { method: 'PUT', body: { ...config, checks: [{ name: '', command: 'x' }] } })).status).toBe(400);
+    expect((await api('/api/projects/nope/verify')).status).toBe(404);
+    expect((await api('/api/sessions/nope/verify', { method: 'POST' })).status).toBe(404);
+  });
+
+  it('tells agents the project\'s checks, validates proposals and starts a chat that asks an agent for them', async () => {
+    const id = await project();
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ scripts: { lint: 'eslint .' } }));
+    const got = await api(`/api/checks?projectId=${id}`);
+    expect(got.body).toMatchObject({ project: 'shop', config: { checks: [] }, suggested: [{ name: 'Lint', command: 'npm run lint' }] });
+    expect((await api('/api/checks?projectId=nope')).status).toBe(404);
+    expect((await api('/api/checks/propose', { method: 'POST', body: { sessionId: 'nope', checks: [{ name: 'a', command: 'b' }] } })).status).toBe(404);
+    expect((await api('/api/checks/propose', { method: 'POST', body: { sessionId: 'x', checks: [] } })).status).toBe(400);
+    expect((await api('/api/checks/propose/unknown?wait=0')).status).toBe(404);
+    expect((await api(`/api/projects/${id}/verify/ask`, { method: 'POST', body: { agentId: 'nope', prompt: 'Work the checks out please' } })).status).toBe(404);
+    expect((await api(`/api/projects/${id}/verify/ask`, { method: 'POST', body: { agentId: 'fake', prompt: 'short' } })).status).toBe(400);
+    const asked = await api(`/api/projects/${id}/verify/ask`, { method: 'POST', body: { agentId: 'fake', prompt: 'Work the checks out for this project and propose them.' } });
+    expect(asked.status).toBe(201);
+    expect(typeof asked.body.sessionId).toBe('string');
+  });
+
+  it('exports memory as a .zip of Markdown files and imports a bullet list without duplicates', async () => {
+    const id = await project();
+    await api('/api/memory', { method: 'POST', body: { projectId: id, text: 'Use pnpm' } });
+    const imported = await api('/api/memory-import', { method: 'POST', body: { projectId: id, text: '# Notes\n- Use pnpm\n- Tests live in test/\n2. Deploy from main\n\n' } });
+    expect(imported.body).toEqual({ added: 2, skipped: 1 });
+    expect((await api(`/api/memory?projectId=${id}`)).body.memories.map((m: { text: string }) => m.text)).toEqual(['Use pnpm', 'Tests live in test/', 'Deploy from main']);
+    const res = await api('/api/memory-export');
+    expect(res.headers['content-type']).toBe('application/zip');
+    expect(res.text.startsWith('PK')).toBe(true);
+    expect(res.text).toContain('shop.md');
+    expect(res.text).toContain('Deploy from main');
+  });
+
+  it('creates, lists, pauses, runs and removes scheduled tasks, and refuses a bad schedule or agent', async () => {
+    const id = await project();
+    const make = (extra: object = {}) => api('/api/tasks', { method: 'POST', body: { projectId: id, agentId: 'fake', title: 'Check tests', prompt: 'Run the test suite and report', spec: { kind: 'every', minutes: 30 }, ...extra } });
+    const created = await make();
+    expect(created.status).toBe(201);
+    expect(created.body.task).toMatchObject({ title: 'Check tests', project: 'shop', when: 'every 30 min', enabled: true });
+    expect((await make({ spec: { kind: 'every', minutes: 1 } })).status).toBe(400);
+    expect((await make({ spec: { kind: 'daily', at: '99:99' } })).status).toBe(400);
+    expect((await make({ agentId: 'nope' })).status).toBe(404);
+    expect((await api('/api/tasks')).body.tasks).toHaveLength(1);
+    const taskId = created.body.task.id as string;
+    expect((await api(`/api/tasks/${taskId}`, { method: 'PATCH', body: { enabled: false } })).status).toBe(200);
+    expect((await api('/api/tasks')).body.tasks[0].enabled).toBe(false);
+    const run = await api(`/api/tasks/${taskId}/run`, { method: 'POST' });
+    expect(run.status).toBe(200);
+    const after = (await api('/api/tasks')).body.tasks[0];
+    expect(after).toMatchObject({ runs: 1, lastSessionId: run.body.sessionId });
+    // The chat it opened carries the prompt, so a search for it finds it.
+    const found = await api(`/api/search?q=${encodeURIComponent('test suite')}&scope=all`);
+    expect(found.body.hits[0]).toMatchObject({ sessionId: run.body.sessionId, kind: 'user' });
+    expect((await api(`/api/tasks/${taskId}`, { method: 'DELETE' })).status).toBe(200);
+    expect((await api('/api/tasks')).body.tasks).toHaveLength(0);
+  });
+
+  it('reads a chat back as text and needs the token like everything else', async () => {
+    const id = await project();
+    const run = await api('/api/tasks', { method: 'POST', body: { projectId: id, agentId: 'fake', title: 'T', prompt: 'Summarise the changelog', spec: { kind: 'once', at: Date.now() + 3_600_000 } } });
+    const ran = await api(`/api/tasks/${run.body.task.id}/run`, { method: 'POST' });
+    const transcript = await api(`/api/transcript/${ran.body.sessionId}`);
+    expect(transcript.body.text).toContain('User: Summarise the changelog');
+    expect((await api('/api/search?q=changelog', { token: null })).status).toBe(401);
+    expect((await api('/api/search?q=a')).status).toBe(400);
+    expect((await api('/api/transcript/missing')).status).toBe(404);
   });
 });
 
@@ -599,14 +732,53 @@ describe('close()', () => {
     expect((await api('/api/agents/fake/options?path=' + encodeURIComponent(dir), { token: null })).status).toBe(401);
   });
 
-  it('keeps server settings: plan-mode auto approval is on until switched off, and unknown keys are refused', async () => {
+  it('keeps server settings: locked settings remain on, and unknown keys are refused', async () => {
     await start();
-    expect((await api('/api/settings')).body).toEqual({ planAutoApprove: true, defaultApproval: 'ask', agentGuide: true });
-    expect((await api('/api/settings', { method: 'PUT', body: { planAutoApprove: false, defaultApproval: 'auto' } })).body).toEqual({ planAutoApprove: false, defaultApproval: 'auto', agentGuide: true });
-    expect((await api('/api/settings')).body).toEqual({ planAutoApprove: false, defaultApproval: 'auto', agentGuide: true });
+    const defaults = {
+      planAutoApprove: true,
+      defaultApproval: 'ask',
+      agentGuide: true,
+      agentTools: true,
+      historySearch: true,
+      projectMemory: true,
+      autoMemory: true,
+      scheduledTasks: true,
+      autoChecks: true,
+      researchPlan: true,
+      researchDepth: 'deep',
+      researchEngines: ['google', 'yandex', 'bing', 'duckduckgo'],
+      browserTool: 'local',
+      scoutSubagent: true,
+      scoutModel: 'gemini-3.8-flash',
+      scoutEffort: 'default',
+      claudeSubagent: true,
+      claudeModel: 'sonnet',
+      claudeEffort: 'default',
+    };
+    expect((await api('/api/settings')).body).toEqual(defaults);
+    // Locked settings (planAutoApprove, agentGuide, scoutSubagent, claudeSubagent) remain true even if attempted to toggle off
+    expect((await api('/api/settings', { method: 'PUT', body: { planAutoApprove: false, defaultApproval: 'auto' } })).body).toEqual({ ...defaults, planAutoApprove: true, defaultApproval: 'auto' });
+    expect((await api('/api/settings')).body).toEqual({ ...defaults, planAutoApprove: true, defaultApproval: 'auto' });
+    expect((await api('/api/settings', { method: 'PUT', body: { researchEngines: ['google', 'altavista'] } })).status).toBe(400);
+    expect((await api('/api/settings', { method: 'PUT', body: { researchDepth: 'deep', researchEngines: ['yandex'], scheduledTasks: false } })).body).toMatchObject({ researchEngines: ['yandex'], scheduledTasks: false });
+    // A change to one setting leaves all the others as they were (a patch is not filled up with defaults).
+    expect((await api('/api/settings', { method: 'PUT', body: { historySearch: false } })).body).toMatchObject({ researchEngines: ['yandex'], scheduledTasks: false, historySearch: false, defaultApproval: 'auto' });
+    expect((await api('/api/settings', { method: 'PUT', body: { researchPlan: false } })).body).toMatchObject({ historySearch: false, researchPlan: false, browserTool: 'local' });
+    await api('/api/settings', { method: 'PUT', body: { browserTool: 'any' } });
+    expect((await api('/api/settings', { method: 'PUT', body: { agentTools: false } })).body).toMatchObject({ browserTool: 'any', agentTools: false });
+    await api('/api/settings', { method: 'PUT', body: { browserTool: 'local', agentTools: true, historySearch: true, scheduledTasks: true, researchEngines: ['google', 'yandex', 'bing', 'duckduckgo'], researchPlan: true } });
     expect((await api('/api/settings', { method: 'PUT', body: { defaultApproval: 'everything' } })).status).toBe(400);
     expect((await api('/api/settings', { method: 'PUT', body: { nope: 1 } })).status).toBe(400);
     expect((await api('/api/settings', { token: null })).status).toBe(401);
+  });
+
+  it('handles scout and claude subagent queries according to settings', async () => {
+    await start();
+    // Default is enabled -> requests reach the validation layer (not 403)
+    const resScout = await api('/api/scout', { method: 'POST', body: { task: '   ' } });
+    expect([200, 400]).toContain(resScout.status);
+    const resClaude = await api('/api/claude-subagent', { method: 'POST', body: { task: '   ' } });
+    expect([200, 400]).toContain(resClaude.status);
   });
 
   it('lists each agent with the limits it has reported (none yet on a fresh install)', async () => {
@@ -640,5 +812,28 @@ describe('close()', () => {
     expect(store.getProject(project.id)).toBeUndefined();
     expect(store.getSession(second.id)).toBeUndefined();
     expect((await api(`/api/projects/${project.id}`, { method: 'DELETE' })).status).toBe(404);
+  });
+
+  it('rewinds a session via POST /api/sessions/:id/rewind', async () => {
+    await start();
+    const project = (await api('/api/projects', { method: 'POST', body: { name: 'p', path: dir } })).body;
+    const session = (await api('/api/sessions', { method: 'POST', body: { projectId: project.id, agentId: 'fake' } })).body;
+
+    store.appendEvent(session.id, { type: 'user_message', text: 'turn 1' });
+    store.appendEvent(session.id, { type: 'user_message', text: 'turn 2' });
+
+    // Invalid beforeSeq validation
+    expect((await api(`/api/sessions/${session.id}/rewind`, { method: 'POST', body: { beforeSeq: -1 } })).status).toBe(400);
+    expect((await api(`/api/sessions/${session.id}/rewind`, { method: 'POST', body: { beforeSeq: 'invalid' } })).status).toBe(400);
+
+    // Valid rewind
+    const events = store.eventsSince(session.id, 0);
+    const turn2Seq = events.find((e) => e.event.type === 'user_message' && (e.event as any).text === 'turn 2')!.seq;
+    const res = await api(`/api/sessions/${session.id}/rewind`, { method: 'POST', body: { beforeSeq: turn2Seq } });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ok: true });
+
+    const remaining = store.eventsSince(session.id, 0);
+    expect(remaining.some((e) => e.seq >= turn2Seq)).toBe(false);
   });
 });

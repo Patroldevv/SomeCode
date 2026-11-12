@@ -263,6 +263,29 @@ describe('store', () => {
     });
   });
 
+  it('rewinds a session by removing events at or after beforeSeq and reprojecting', () => {
+    const store = open(':memory:');
+    const p = store.addProject({ name: 'p', path: '/tmp/p' });
+    const s = store.createSession({ projectId: p.id, agentId: 'claude' });
+    store.appendEvent(s.id, { type: 'user_message', text: 'turn 1' });
+    store.appendEvent(s.id, { type: 'agent_message', text: 'answer 1' });
+    store.appendEvent(s.id, { type: 'user_message', text: 'turn 2' });
+    store.appendEvent(s.id, { type: 'agent_message', text: 'answer 2' });
+
+    let events = store.eventsSince(s.id, 0);
+    expect(events).toHaveLength(4);
+
+    // Rewind to turn 2 (seq = 3)
+    store.rewindSession(s.id, 3);
+    events = store.eventsSince(s.id, 0);
+    expect(events).toHaveLength(2);
+    expect((events[0]!.event as any).text).toBe('turn 1');
+    expect((events[1]!.event as any).text).toBe('answer 1');
+
+    const history = store.history(s.id);
+    expect(history.state.items).toHaveLength(2);
+  });
+
   it('leaves small events untouched', () => {
     const store = open(':memory:');
     const p = store.addProject({ name: 'p', path: '/tmp/p' });

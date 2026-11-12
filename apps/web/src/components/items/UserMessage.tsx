@@ -15,16 +15,20 @@ export function UserMessage({
   text,
   images,
   local = false,
+  onUndo,
 }: {
   text: string;
   images?: ImageAttachment[];
   local?: boolean;
+  onUndo?: () => void;
 }) {
   const { copied, copy } = useCopy(text);
   const [activeImage, setActiveImage] = useState<string | null>(null);
   const { body, files } = splitAttachedFiles(text);
   const isGoal = body.startsWith("/goal");
-  const displayText = isGoal ? body.slice(5).trim() : body;
+  const researchCommand = /^\/(?:deep-)?research(?=\s|$)/i.exec(body);
+  const isResearch = researchCommand !== null;
+  const displayText = isGoal ? body.slice(5).trim() : researchCommand ? body.slice(researchCommand[0].length).trim() : body;
 
   useEffect(() => {
     if (!activeImage) return;
@@ -77,13 +81,19 @@ export function UserMessage({
         <div
           className={`user-bubble max-w-[85%] min-w-0 font-ui text-[14.5px] leading-relaxed whitespace-pre-wrap [overflow-wrap:anywhere] ${
             local ? "text-text-muted" : "text-text"
-          } ${isGoal ? "border border-amber-500/40 bg-amber-500/10" : ""}`}
+          } ${isGoal ? "border border-amber-500/40 bg-amber-500/10" : ""} ${isResearch ? "research-bubble" : ""}`}
         >
           <span className="sr-only">{t("item.user")}: </span>
           {isGoal && (
             <div className="mb-1.5 flex items-center gap-1.5 font-medium text-amber-400 text-xs tracking-wide">
               <SymbolIcon name="goal" className="size-3.5" />
               <span>/goal</span>
+            </div>
+          )}
+          {isResearch && (
+            <div className="research-badge">
+              <SymbolIcon name="research" className="size-3.5" />
+              <span>{t("mode.deepResearch")}</span>
             </div>
           )}
           {displayText || body || text}
@@ -100,6 +110,17 @@ export function UserMessage({
           <SymbolIcon name="copy" className="size-3.5" />
           {copied && <span aria-live="polite" className="text-xs">{t("copy.done")}</span>}
         </button>
+        {onUndo && !local && (
+          <button
+            type="button"
+            onClick={onUndo}
+            aria-label={t("undo.buttonTitle")}
+            title={t("undo.buttonTitle")}
+            className="msg-action hover:text-danger"
+          >
+            <SymbolIcon name="undo" className="size-3.5" />
+          </button>
+        )}
       </div>
 
       {activeImage &&

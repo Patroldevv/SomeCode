@@ -3,6 +3,7 @@ import { errorText, t } from '../i18n/index.ts';
 import { ApiError, type PluginInfo, type PluginsOverview, type ServiceInfo, type SkillInfo } from '../lib/api.ts';
 import { safeHref } from '../lib/safeUrl.ts';
 import { CheckIcon } from './icons.tsx';
+import { SettingsSelect } from './SettingsSelect.tsx';
 import { SymbolIcon } from './SymbolIcon.tsx';
 
 type Api = {
@@ -70,8 +71,18 @@ function Logo({ owner, name, load, size = 40 }: { owner: string | undefined; nam
       { rootMargin: '800px 0px' },
     );
     observer.observe(ref.current);
+    // Some embedded views never call the observer back: a logo near the screen is then asked for anyway.
+    const el = ref.current;
+    const fallback = setTimeout(() => {
+      const box = el.getBoundingClientRect();
+      if (box.bottom > -800 && box.top < window.innerHeight + 800) {
+        observer.disconnect();
+        fetchIt();
+      }
+    }, 1200);
     return () => {
       alive = false;
+      clearTimeout(fallback);
       observer.disconnect();
     };
   }, [owner, load]);
@@ -156,11 +167,7 @@ function AddSkill({ api, onDone, onCancel }: { api: Api; onDone: (message: strin
             </button>
           ))}
         </div>
-        <select className="settings-select" aria-label={t('plugins.forAgent')} value={agent} onChange={(e) => setAgent(e.target.value)}>
-          {AGENTS.map((a) => (
-            <option key={a.id} value={a.id}>{a.label}</option>
-          ))}
-        </select>
+        <SettingsSelect label={t('plugins.forAgent')} value={agent} options={AGENTS.map((a) => ({ value: a.id, label: a.label }))} onChange={setAgent} />
       </div>
       {mode === 'write' ? (
         <>
@@ -289,10 +296,7 @@ function ConnectForm({ onConnect, onCancel, busy }: { onConnect: (input: { name:
     >
       <input className="question-input" aria-label={t('services.name')} placeholder={t('services.name')} value={name} onChange={(e) => setName(e.target.value.toLowerCase().replace(/[^a-z0-9-]+/g, '-'))} />
       <input className="question-input" aria-label={t('services.url')} placeholder="https://example.com/mcp" value={url} onChange={(e) => setUrl(e.target.value)} />
-      <select className="settings-select self-start" aria-label={t('services.transport')} value={transport} onChange={(e) => setTransport(e.target.value)}>
-        <option value="http">HTTP</option>
-        <option value="sse">SSE</option>
-      </select>
+      <SettingsSelect className="self-start" align="left" label={t('services.transport')} value={transport} options={[{ value: 'http', label: 'HTTP' }, { value: 'sse', label: 'SSE' }]} onChange={setTransport} />
       <input className="question-input" type="password" autoComplete="off" aria-label={t('services.token')} placeholder={t('services.token')} value={token} onChange={(e) => setToken(e.target.value)} />
       <p className="text-[12.5px] leading-snug text-text-muted">{t('services.hint')}</p>
       <div className="flex gap-2">
@@ -654,8 +658,8 @@ export function PluginsPage({ api, onClose }: { api: Api; onClose: () => void })
                         </p>
                         <p className="truncate text-[13px] text-text-muted" title={s.description}>{s.description}</p>
                       </div>
-                      {s.removable &&
-                        (confirmRemove === skillKey(s) ? (
+                      {s.removable ? (
+                        confirmRemove === skillKey(s) ? (
                           <span className="flex shrink-0 items-center gap-1.5">
                             <button type="button" className="question-skip" onClick={() => setConfirmRemove(null)}>{t('menu.cancel')}</button>
                             <button type="button" className="context-danger" disabled={busy.has(skillKey(s))} onClick={() => { setConfirmRemove(null); void run(skillKey(s), () => api.removeSkill(s.agent, s.name), t('plugins.removedDone', { name: s.name })); }}>
@@ -666,7 +670,12 @@ export function PluginsPage({ api, onClose }: { api: Api; onClose: () => void })
                           <button type="button" className="icon-button" aria-label={t('plugins.removeSkill', { name: s.name })} title={t('menu.delete')} onClick={() => setConfirmRemove(skillKey(s))}>
                             <SymbolIcon name="close" className="size-4" />
                           </button>
-                        ))}
+                        )
+                      ) : s.name === 'scout' || s.name === 'claude' ? (
+                        <span className="shrink-0 text-[12px] text-text-muted italic px-2">
+                          {t('plugins.managedInSettings')}
+                        </span>
+                      ) : null}
                     </li>
                   ))}
                 </ul>

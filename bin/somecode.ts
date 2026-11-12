@@ -2,6 +2,7 @@
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { mkdirSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { fileURLToPath } from 'node:url';
@@ -10,6 +11,7 @@ import { dataDir } from '../apps/server/src/config.ts';
 import { pickBrowserCommand } from '../apps/server/src/launcher/browser.ts';
 import { useLoginPath } from '../apps/server/src/launcher/path.ts';
 import { startServer, type RunningServer } from '../apps/server/src/server.ts';
+import { createUsageHistory } from '../apps/server/src/usage/history.ts';
 import { openStore } from '../apps/server/src/store/store.ts';
 
 // Started from the application menu, the PATH is bare: take the login shell's and the usual agent folders.
@@ -85,15 +87,23 @@ const data = dataDir();
 mkdirSync(data, { recursive: true, mode: 0o700 });
 const store = openStore(join(data, 'somecode.db'));
 
+// The token history reads a lot of transcripts the first time: it is read once the server is up, in the background, and
+// what was read is kept in the data folder, so opening Usage later is quick.
+const usageHistory = createUsageHistory({ home: homedir(), cacheFile: join(dataDir(), 'usage-history.json') });
+setTimeout(() => void usageHistory.get().catch(() => {}), 4000).unref();
+
 let server: RunningServer;
 try {
-  server = await startServer({ store, registry: defaultRegistry(), token, port, staticDir: hasUi ? staticDir : undefined });
+  server = await startServer({ store, registry: defaultRegistry(), token, port, staticDir: hasUi ? staticDir : undefined, usageHistory });
 } catch (err) {
   store.close();
   fail(`could not start the server: ${err instanceof Error ? err.message : String(err)}`, 1);
 }
 
-const launchUrl = `${server.url}#token=${token}`;
+// The address carries a one-time code, not the token: it ends up in process lists and shell history.
+const launchUrl = `${server.url}#code=${server.launchCode()}`;
+process.env.SOMECODE_URL = server.url;
+process.env.SOMECODE_TOKEN = token;
 process.stdout.write(`SomeCode: ${launchUrl}\n`);
 
 if (open) {

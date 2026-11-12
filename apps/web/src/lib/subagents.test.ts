@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Item, ToolItem } from './sessionState.ts';
-import { describeSubagentCall, groupSubagentCalls, isSubagentCall, subagentsOf } from './subagents.ts';
+import { describeSubagentCall, groupSubagentCalls, isScoutCall, isSubagentCall, subagentsOf } from './subagents.ts';
 
 const tool = (id: string, over: Partial<ToolItem> = {}): ToolItem => ({ kind: 'tool', key: id, id, title: id, toolKind: 'other', status: 'completed', content: [], ...over });
 
@@ -98,6 +98,69 @@ describe('Antigravity invoke_subagent', () => {
   });
 });
 
+describe('Gemini Scout subagent', () => {
+  it('recognizes somecode-scout tool calls as subagents and extracts task cleanly', () => {
+    const scoutCall = tool('sc1', {
+      title: 'somecode-scout "scan auth routes" --timeout 180000',
+      rawInput: { command: 'somecode-scout "scan auth routes" --timeout 180000' },
+      content: [{ type: 'text', text: 'Auth routes summary: 3 endpoints found.\nexit=0' }],
+    });
+
+    expect(isSubagentCall(scoutCall)).toBe(true);
+    expect(describeSubagentCall(scoutCall)).toEqual({
+      name: 'Gemini Scout',
+      description: 'Gemini 3.8 Flash',
+      prompt: 'scan auth routes',
+    });
+
+    const [agent] = subagentsOf([scoutCall]);
+    expect(agent).toMatchObject({
+      name: 'Gemini Scout',
+      description: 'Gemini 3.8 Flash',
+      prompt: 'scan auth routes',
+      status: 'completed',
+      output: 'Auth routes summary: 3 endpoints found.',
+    });
+  });
+
+  it('groups consecutive scout calls into an agents row', () => {
+    const s1 = tool('s1', { rawInput: { command: 'somecode-scout "task 1"' } });
+    const s2 = tool('s2', { rawInput: { command: 'somecode-scout "task 2"' } });
+    const rows = groupSubagentCalls([tool('regular'), s1, s2]);
+    expect(rows[1]).toMatchObject({
+      kind: 'agents',
+      key: 'agents:s1',
+      calls: [s1, s2],
+    });
+  });
+});
+
+describe('Claude subagent', () => {
+  it('recognizes somecode-claude tool calls as subagents and extracts task cleanly', () => {
+    const claudeCall = tool('cl1', {
+      title: 'somecode-claude "refactor auth logic" --model sonnet',
+      rawInput: { command: 'somecode-claude "refactor auth logic" --model sonnet' },
+      content: [{ type: 'text', text: 'Refactored auth logic cleanly.' }],
+    });
+
+    expect(isSubagentCall(claudeCall)).toBe(true);
+    expect(describeSubagentCall(claudeCall)).toEqual({
+      name: 'Claude Subagent',
+      description: 'Claude Code',
+      prompt: 'refactor auth logic',
+    });
+
+    const [agent] = subagentsOf([claudeCall]);
+    expect(agent).toMatchObject({
+      name: 'Claude Subagent',
+      description: 'Claude Code',
+      prompt: 'refactor auth logic',
+      status: 'completed',
+      output: 'Refactored auth logic cleanly.',
+    });
+  });
+});
+
 describe('nested hand-offs', () => {
   it('keeps a hand-off made by a sub-agent as its own sub-agent with the parent noted, not as one of the parent\'s calls', () => {
     const outer = tool('outer', { rawInput: { subagent_type: 'explore', description: 'Outer', prompt: 'x' } });
@@ -106,5 +169,30 @@ describe('nested hand-offs', () => {
     const agents = subagentsOf([outer, inner, read]);
     expect(agents.map((a) => [a.id, a.parentId])).toEqual([['outer', undefined], ['inner', 'outer']]);
     expect(agents[0]!.calls.map((c) => c.id)).toEqual(['read1']);
+  });
+});
+
+describe('Gemini Scout detection', () => {
+  it('does not take loading the scout skill, or reading a file that mentions the command, for a scout run', () => {
+    const skill = tool('sk', { title: 'Load skill: scout', toolKind: 'other', rawInput: { name: 'scout', content: 'Run via Bash: somecode-scout "<task>"' }, status: 'completed' });
+    const cat = tool('ct', { title: 'cat SKILL.md', toolKind: 'execute', rawInput: { command: 'cat ~/.claude/skills/scout/SKILL.md # somecode-scout' } });
+    expect(isScoutCall(skill)).toBe(false);
+    expect(isScoutCall(cat)).toBe(false);
+    expect(subagentsOf([skill, cat])).toEqual([]);
+  });
+
+  it('still recognises a command run after a cd or in a pipeline', () => {
+    expect(isScoutCall(tool('r', { toolKind: 'execute', rawInput: { command: 'cd /app && somecode-scout "scan"' } }))).toBe(true);
+    expect(isScoutCall(tool('r2', { title: 'Run somecode-scout "x"' }))).toBe(true);
+  });
+});
+
+describe('Gemini Scout as a tool of its own', () => {
+  it('is a sub-agent named Gemini Scout, with the task from the tool input', () => {
+    const call = tool('m1', { title: 'mcp__somecode__scout', toolKind: 'other', rawInput: { task: 'map the server', files: ['apps/server'] }, status: 'in_progress' });
+    expect(isScoutCall(call)).toBe(true);
+    expect(isSubagentCall(call)).toBe(true);
+    expect(describeSubagentCall(call)).toMatchObject({ name: 'Gemini Scout', prompt: 'map the server' });
+    expect(isScoutCall(tool('m2', { title: 'Task: explore', rawInput: { task: 'x' } }))).toBe(false);
   });
 });

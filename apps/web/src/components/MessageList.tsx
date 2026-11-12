@@ -1,5 +1,5 @@
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { FormAnswer } from '@somecode/protocol';
 import { useStickToBottom } from '../hooks/useStickToBottom.ts';
 import { useFreshKeys } from "../hooks/useFreshKeys.ts";
@@ -12,10 +12,13 @@ import { PlanChecklist } from './items/PlanChecklist.tsx';
 import { PromptRail, promptEntries } from './PromptRail.tsx';
 import { SubagentGroup } from './items/SubagentGroup.tsx';
 import { groupSubagentCalls, subagentsOf, type Subagent, type AgentsRow } from '../lib/subagents.ts';
-import { withEditsRows, type EditedFile, type EditsRow } from '../lib/edits.ts';
+import { withEditsRows, editsOfTurn, type EditedFile, type EditsRow } from '../lib/edits.ts';
+import { isHiddenTool } from '../lib/researchTools.ts';
 import { groupToolCalls, type ToolGroupRow } from '../lib/toolGroups.ts';
+import type { TranscriptView } from '../lib/settings.ts';
 import { ToolGroup } from './items/ToolGroup.tsx';
 import { SubagentWait } from './SubagentWait.tsx';
+import { ConfirmUndoDialog } from './ConfirmUndoDialog.tsx';
 
 export type SubagentWaitRow = { kind: 'agents_wait'; key: string; running: number };
 export type MessageListRow = AgentsRow | EditsRow | ToolGroupRow | Item | SubagentWaitRow;
@@ -29,6 +32,7 @@ const ESTIMATE: Record<Item['kind'] | 'edits' | 'agents' | 'tool_group' | 'agent
   tool_group: 34,
   agents_wait: 36,
   permission: 120,
+  verification: 110,
   edits: 150,
   agents: 32,
   error: 64,
@@ -70,6 +74,9 @@ export function MessageList({
   signInHint,
   subagents,
   onOpenAgents,
+  onRollbackTurn,
+  onUndoTurn,
+  view = 'normal',
 }: {
   items: Item[];
   plan: PlanEntry[] | null;
@@ -80,10 +87,24 @@ export function MessageList({
   signInHint?: string;
   subagents?: readonly Subagent[];
   onOpenAgents?: (subagentId?: string) => void;
+  /** Reverts the changes made in a specific turn. */
+  onRollbackTurn?: (files: EditedFile[]) => Promise<void> | void;
+  /** Undoes a user turn, rewinds the conversation, puts text in draft, and optionally reverts file edits. */
+  onUndoTurn?: (item: Item, files: EditedFile[], revertFiles: boolean) => Promise<void> | void;
+  /** How much starts open: normal (nothing), thinking (the agent's thoughts) or detailed (thoughts and tool calls). */
+  view?: TranscriptView;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const sessionSubagents = useMemo(() => subagents ?? subagentsOf(items), [subagents, items]);
   const runningCount = sessionSubagents.filter((s) => s.status === 'running').length;
+  const [undoTarget, setUndoTarget] = useState<{ item: Item; files: EditedFile[] } | null>(null);
+
+  const handleUndoMessage = useCallback(
+    (item: Item) => {
+      setUndoTarget({ item, files: editsOfTurn(items, item.key, true) });
+    },
+    [items],
+  );
   // Only items that arrive while the list is open animate in; history and scrolled-back rows do not.
   // The log: the items, with a "files edited" summary after each finished turn that changed files.
   // A sub-agent's own tool calls live in the sub-agent view (card and panel), not in the main conversation.
@@ -91,7 +112,7 @@ export function MessageList({
     const list: MessageListRow[] = [
       ...groupToolCalls(
         groupSubagentCalls(
-          withEditsRows(items, status === 'running').filter((r) => !(r.kind === 'tool' && r.parent)),
+          withEditsRows(items, status === 'running').filter((r) => !(r.kind === 'tool' && (r.parent || isHiddenTool(r)))),
         ),
       ),
     ];
@@ -131,6 +152,30 @@ export function MessageList({
       return next;
     });
   }, []);
+
+  // The chosen view decides what starts open: items already shown follow a change of view at once, later ones as
+  // they arrive (and one the user then folds or opens by hand stays as they left it).
+  const seenForView = useRef<{ view: TranscriptView; keys: Set<string> }>({ view, keys: new Set() });
+  useEffect(() => {
+    const wanted = (kind: 'thought' | 'tool') => (kind === 'thought' ? view !== 'normal' : view === 'detailed');
+    const entries = rows.flatMap((r): { key: string; kind: 'thought' | 'tool' }[] =>
+      r.kind === 'thought' ? [{ key: r.key, kind: 'thought' }]
+      : r.kind === 'tool' ? [{ key: r.key, kind: 'tool' }]
+      : r.kind === 'tool_group' ? [{ key: r.key, kind: 'tool' }, ...r.calls.map((c) => ({ key: c.key, kind: 'tool' as const }))]
+      : [],
+    );
+    const seen = seenForView.current;
+    if (seen.view !== view) {
+      seenForView.current = { view, keys: new Set(entries.map((e) => e.key)) };
+      setExpanded(new Set(entries.filter((e) => wanted(e.kind)).map((e) => e.key)));
+      return;
+    }
+    const fresh = entries.filter((e) => !seen.keys.has(e.key));
+    if (fresh.length === 0) return;
+    for (const e of fresh) seen.keys.add(e.key);
+    const open = fresh.filter((e) => wanted(e.kind)).map((e) => e.key);
+    if (open.length > 0) setExpanded((prev) => new Set([...prev, ...open]));
+  }, [rows, view]);
 
   const viewChanges = (files: readonly EditedFile[]) => {
     const keys = new Set(files.flatMap((f) => f.toolKeys));
@@ -217,7 +262,11 @@ export function MessageList({
                   style={{ position: 'absolute', top: 0, left: 0, width: '100%', transform: `translateY(${row.start - virtualizer.options.scrollMargin}px)` }}
                 >
                   <div className="mx-auto w-full max-w-3xl px-4 py-2">
-                    <EditsCard files={entry.files} onView={() => viewChanges(entry.files)} />
+                    <EditsCard
+                      files={entry.files}
+                      onView={() => viewChanges(entry.files)}
+                      onRollback={onRollbackTurn ? () => onRollbackTurn(entry.files) : undefined}
+                    />
                   </div>
                 </div>
               );
@@ -317,6 +366,7 @@ export function MessageList({
                     onRespond={respond}
                     expanded={(item.kind === 'tool' || item.kind === 'thought') && expanded.has(item.key)}
                     onToggle={toggle}
+                    onUndoMessage={onUndoTurn ? handleUndoMessage : undefined}
                     {...(signInHint ? { signInHint } : {})}
                   />
                 </div>
@@ -343,6 +393,17 @@ export function MessageList({
           )}
         </button>
       )}
+      <ConfirmUndoDialog
+        open={undoTarget !== null}
+        files={undoTarget?.files ?? []}
+        hasFileEdits={(undoTarget?.files.length ?? 0) > 0}
+        onClose={() => setUndoTarget(null)}
+        onConfirm={async (revertFiles) => {
+          if (undoTarget && onUndoTurn) {
+            await onUndoTurn(undoTarget.item, undoTarget.files, revertFiles);
+          }
+        }}
+      />
     </div>
   );
 }

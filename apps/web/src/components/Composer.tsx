@@ -14,7 +14,9 @@ export interface SlashCommand {
   command: string;
   name: string;
   description: string;
-  icon: 'goal' | 'compass' | 'globe' | 'layers' | 'book';
+  icon: 'goal' | 'compass' | 'globe' | 'layers' | 'book' | 'search' | 'research' | 'shield';
+  /** Only in a chat that exists (it acts on the chat itself). */
+  inChat?: boolean;
 }
 
 const SLASH_COMMANDS: SlashCommand[] = [
@@ -31,6 +33,12 @@ const SLASH_COMMANDS: SlashCommand[] = [
     icon: 'compass',
   },
   {
+    command: '/deep-research',
+    name: '/deep-research',
+    description: 'Derin araştırma: Plan çıkarır, Google/Yandex/Bing ile çok kaynaktan inceler ve kaynaklı rapor yazar',
+    icon: 'research',
+  },
+  {
     command: '/browser',
     name: '/browser',
     description: 'Web & Araştırma: İnternette arama yap ve kaynakları incele',
@@ -43,6 +51,13 @@ const SLASH_COMMANDS: SlashCommand[] = [
     icon: 'layers',
   },
   {
+    command: '/verify',
+    name: '/verify',
+    description: 'Kontrolleri çalıştır: Projenin test, typecheck ve lint komutlarını şimdi çalıştır',
+    icon: 'shield',
+    inChat: true,
+  },
+  {
     command: '/learn',
     name: '/learn',
     description: 'Kuralları kaydet: Projeye özel kuralları ve deneyimleri kaydet',
@@ -51,6 +66,10 @@ const SLASH_COMMANDS: SlashCommand[] = [
 ];
 
 export interface ComposerProps {
+  /** The box belongs to a chat that exists (a new-chat screen has no chat to act on). */
+  inChat?: boolean;
+  /** Replaces "Message the agent" as the hint of an empty box. */
+  placeholder?: string;
   /** Controls shown inside the composer, left of the send button (e.g. model and mode chips). */
   toolbar?: ReactNode;
   projectId?: string;
@@ -84,6 +103,8 @@ export function Composer({
   disableSend,
   sendDisabledTooltip,
   disabledPlaceholder,
+  placeholder,
+  inChat = false,
   onSend,
   onCancel,
 }: ComposerProps) {
@@ -129,7 +150,7 @@ export function Composer({
   useEffect(() => {
     if (value.startsWith('/') && !value.includes(' ') && !value.includes('\n')) {
       const q = value.toLowerCase();
-      const filtered = SLASH_COMMANDS.filter((cmd) => cmd.command.toLowerCase().startsWith(q));
+      const filtered = SLASH_COMMANDS.filter((cmd) => (cmd.inChat !== true || inChat) && cmd.command.toLowerCase().startsWith(q));
       setSlashMatches(filtered);
       setSlashSelected(0);
     } else {
@@ -163,7 +184,7 @@ export function Composer({
     if (!disabled) ref.current?.focus();
   }, [disabled]);
 
-  useLayoutEffect(() => {
+  const fit = () => {
     const el = ref.current;
     if (!el) return;
     const max = maxHeightPx(el);
@@ -172,7 +193,23 @@ export function Composer({
     el.style.height = `${h}px`;
     el.style.maxHeight = `${max}px`;
     el.style.overflowY = el.scrollHeight > max ? "auto" : "hidden";
-  }, [value]);
+  };
+  useLayoutEffect(fit, [value]);
+  // The box can be measured while it is still narrow (a view that is opening): its placeholder then wraps into a
+  // tall column and the box stays tall. Measure again whenever its width changes.
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    let width = el.clientWidth;
+    const observer = new ResizeObserver(() => {
+      if (el.clientWidth === width) return;
+      width = el.clientWidth;
+      fit();
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const addTextFile = async (file: File) => {
     const fail = (key: 'attach.binary' | 'attach.tooLarge' | 'attach.total') => setAttachError(t(key, { name: file.name }));
@@ -422,7 +459,7 @@ export function Composer({
           disabled={disabled}
           aria-label={t("composer.label")}
           title={t("composer.hint")}
-          placeholder={disabled && disabledPlaceholder ? disabledPlaceholder : t("chat.placeholder")}
+          placeholder={disabled && disabledPlaceholder ? disabledPlaceholder : (placeholder ?? t("chat.placeholder"))}
           onChange={(e) => onChange(e.target.value)}
           onKeyDown={onKeyDown}
           onPaste={onPaste}

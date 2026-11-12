@@ -92,3 +92,12 @@ describe('summarizeToolGroup', () => {
     expect(summary.title).toContain('Dosyalar incelendi, komutlar çalıştırıldı');
   });
 });
+
+describe('screenshots are not grouped away', () => {
+  it('keeps a tool call that returned a picture as a row of its own', () => {
+    const plain = (key: string) => ({ kind: 'tool' as const, key, id: key, title: key, toolKind: 'other', status: 'completed', content: [] });
+    const shot = { ...plain('s'), content: [{ type: 'image' as const, data: 'A', mimeType: 'image/jpeg' }] };
+    const rows = groupToolCalls([plain('a'), plain('b'), shot, plain('c'), plain('d')]);
+    expect(rows.map((r) => r.kind)).toEqual(['tool_group', 'tool', 'tool_group']);
+  });
+});

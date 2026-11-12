@@ -2,11 +2,11 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { Readable, Writable } from 'node:stream';
 import { client, methods, ndJsonStream, PROTOCOL_VERSION, RequestError } from '@agentclientprotocol/sdk';
-import type { ClientConnection, RequestPermissionRequest, StopReason } from '@agentclientprotocol/sdk';
+import type { ClientConnection, McpServer, RequestPermissionRequest, StopReason } from '@agentclientprotocol/sdk';
 import { SomeCodeError, type ConfigOption, type ErrorCode, type FormAnswer, type FormField, type ImageAttachment, type NormalizedEvent } from '@somecode/protocol';
 import type { AgentDriver } from '../agents/types.ts';
 import { PermissionBroker } from '../permissions/broker.ts';
-import { normalizeConfigOptions, normalizeForm, normalizePermission, normalizeUpdate, sanitizeAnswer, subagentOf } from './normalize.ts';
+import { normalizeConfigOptions, normalizeForm, normalizePermission, normalizeUpdate, sanitizeAnswer, sanitizePlanSteps, subagentOf } from './normalize.ts';
 import { jsonLines, UnknownUpdates } from './stdio.ts';
 
 export type { StopReason };
@@ -25,7 +25,13 @@ type StartOptions = {
   onRateLimit?: (info: unknown) => void;
   /** The option to pick for a permission request without asking the user, or null to ask (see `planModeApproval`). */
   autoApprove?: (mode: string | null, req: RequestPermissionRequest) => string | null;
+  /** Extra environment variables passed to the agent process (e.g. SOMECODE_URL, SOMECODE_TOKEN). */
+  env?: NodeJS.ProcessEnv;
+  /** MCP servers the agent starts for this session (ACP `mcpServers`): tools SomeCode offers it. */
+  mcpServers?: McpServerConfig[];
 };
+
+export type McpServerConfig = McpServer;
 type State = 'starting' | 'ready' | 'running' | 'disconnected';
 
 /** JSON-RPC error codes from the agent that map to a specific SomeCode error. */
@@ -90,6 +96,8 @@ export class AcpSession {
   /** Open questions (form requests) by request id: what each one asks, and the validated answer once given. */
   readonly #forms = new Map<string, FormField[]>();
   readonly #answers = new Map<string, FormAnswer>();
+  /** Open research plans (request ids): the user may edit the steps before starting. */
+  readonly #plans = new Set<string>();
   readonly #exited: Promise<void>;
   #sessionId = '';
   #loading = false;
@@ -111,7 +119,7 @@ export class AcpSession {
     if (opts.signal?.aborted) throw new SomeCodeError('disconnected', 'agent start was aborted');
     const child = spawn(launch.command, launch.args, {
       cwd: opts.cwd,
-      env: { ...process.env, ...launch.env },
+      env: { ...process.env, ...opts.env, ...launch.env },
       stdio: ['pipe', 'pipe', 'inherit'],
     });
     await spawned(child, launch.command);
@@ -128,7 +136,7 @@ export class AcpSession {
     }, startTimeoutMs(opts));
     try {
       if (opts.signal?.aborted) abort();
-      await session.#open(opts.cwd, opts.acpSessionId);
+      await session.#open(opts.cwd, opts.acpSessionId, opts.mcpServers);
     } catch (err) {
       const error = timedOut
         ? new SomeCodeError('disconnected', 'agent did not start in time')
@@ -258,7 +266,7 @@ export class AcpSession {
     return this.#info;
   }
 
-  async #open(cwd: string, acpSessionId?: string): Promise<void> {
+  async #open(cwd: string, acpSessionId?: string, mcpServers: McpServerConfig[] = []): Promise<void> {
     const init = await this.#conn.agent.request(methods.agent.initialize, {
       protocolVersion: PROTOCOL_VERSION,
       // `elicitation.form`: the agent may ask the user questions (OpenCode's question tool, plan hand-offs).
@@ -281,8 +289,8 @@ export class AcpSession {
     this.#loading = acpSessionId !== undefined;
     this.#sessionId = acpSessionId ?? '';
     const res = acpSessionId
-      ? await this.#conn.agent.request(methods.agent.session.load, { cwd, mcpServers: [], sessionId: acpSessionId })
-      : await this.#conn.agent.request(methods.agent.session.new, { cwd, mcpServers: [] });
+      ? await this.#conn.agent.request(methods.agent.session.load, { cwd, mcpServers, sessionId: acpSessionId })
+      : await this.#conn.agent.request(methods.agent.session.new, { cwd, mcpServers });
     if ('sessionId' in res && typeof res.sessionId === 'string') this.#sessionId = res.sessionId;
     // Drain notification handlers scheduled before the load response before accepting live updates.
     if (this.#loading) await new Promise((resolve) => setImmediate(resolve));
@@ -448,7 +456,8 @@ export class AcpSession {
     // A question's answer is checked against what it asked before anything is settled; a bad one throws and the
     // question stays open.
     const fields = this.#forms.get(requestId);
-    const clean = fields && optionId !== null ? sanitizeAnswer(fields, answer ?? {}) : undefined;
+    let clean = fields && optionId !== null ? sanitizeAnswer(fields, answer ?? {}) : undefined;
+    if (this.#plans.has(requestId) && optionId === 'start') clean = { steps: sanitizePlanSteps(answer?.['steps']) };
     this.#pendingPermissions.delete(requestId);
     if (clean) this.#answers.set(requestId, clean);
     this.#emit(
@@ -457,6 +466,50 @@ export class AcpSession {
         : { type: 'permission_resolved', requestId, outcome: 'selected', optionId, ...(clean ? { answer: clean } : {}) },
     );
     return this.#broker.respond(requestId, optionId);
+  }
+
+  /**
+   * Puts a research plan in front of the user and waits: they may edit the steps, start or cancel. Resolves with the
+   * steps to follow, or null when they cancelled (or the chat was stopped).
+   */
+  async askPlan(title: string, steps: string[]): Promise<{ requestId: string; result: Promise<string[] | null> }> {
+    const { requestId, decision } = this.#broker.request();
+    this.#pendingPermissions.add(requestId);
+    this.#plans.add(requestId);
+    this.#emit({
+      type: 'permission_request',
+      requestId,
+      toolCallId: requestId,
+      title,
+      options: [{ id: 'start', name: 'Start', kind: 'allow_once' }, { id: 'cancel', name: 'Cancel', kind: 'reject_once' }],
+      plan: { steps },
+    });
+    const result = decision.then((optionId) => {
+      const answer = this.#answers.get(requestId);
+      this.#plans.delete(requestId);
+      this.#answers.delete(requestId);
+      const edited = answer?.['steps'];
+      return optionId === 'start' && Array.isArray(edited) ? (edited as string[]) : null;
+    });
+    return { requestId, result };
+  }
+
+  /**
+   * Puts something to the user to approve or refuse (`detail` is markdown) and waits. Resolves true on approval; a
+   * refusal, a cancelled turn or a closed chat is false.
+   */
+  async askApproval(title: string, detail: string): Promise<{ requestId: string; result: Promise<boolean> }> {
+    const { requestId, decision } = this.#broker.request();
+    this.#pendingPermissions.add(requestId);
+    this.#emit({
+      type: 'permission_request',
+      requestId,
+      toolCallId: requestId,
+      title,
+      detail,
+      options: [{ id: 'approve', name: 'Approve', kind: 'allow_once' }, { id: 'refuse', name: 'Refuse', kind: 'reject_once' }],
+    });
+    return { requestId, result: decision.then((optionId) => optionId === 'approve') };
   }
 
   close(): Promise<void> {

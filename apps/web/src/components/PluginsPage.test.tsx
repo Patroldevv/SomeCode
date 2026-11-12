@@ -100,6 +100,22 @@ describe('PluginsPage', () => {
     expect(screen.queryByRole('button', { name: 'Remove skill redis-core' })).not.toBeInTheDocument();
   });
 
+  it('shows managed in settings for scout skill and prevents removal', async () => {
+    const { user } = setup({
+      plugins: vi.fn(async () => ({
+        ...overview(),
+        skills: [
+          ...overview().skills,
+          { agent: 'claude' as const, name: 'scout', description: 'Scout subagent', source: 'builtin' as const, removable: false },
+        ],
+      })),
+    });
+    await user.click(await screen.findByRole('tab', { name: /Installed/ }));
+    expect(screen.getByText('scout')).toBeInTheDocument();
+    expect(screen.getByText('Managed in Settings')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Remove skill scout' })).not.toBeInTheDocument();
+  });
+
   it('asks again before removing a skill, and uninstalls a plugin', async () => {
     const { api, user } = setup();
     await user.click(await screen.findByRole('tab', { name: /Installed/ }));
@@ -119,7 +135,8 @@ describe('PluginsPage', () => {
     await user.type(within(form).getByRole('textbox', { name: 'Name (letters, digits, dashes)' }), 'My Skill!');
     await user.type(within(form).getByRole('textbox', { name: 'When should the agent use it?' }), 'For tests');
     await user.type(within(form).getByRole('textbox', { name: 'Instructions' }), 'Do things');
-    await user.selectOptions(within(form).getByRole('combobox', { name: 'For which agent' }), 'agy');
+    await user.click(within(form).getByRole('button', { name: 'For which agent' }));
+    await user.click(screen.getByRole('option', { name: 'Antigravity' }));
     await user.click(within(form).getByRole('button', { name: 'Add' }));
     expect(api.addSkill).toHaveBeenCalledWith({ agent: 'agy', name: 'my-skill-', description: 'For tests', content: 'Do things' });
     expect(await screen.findByText('Skill added: my-skill-.')).toBeInTheDocument();
@@ -223,7 +240,8 @@ describe('PluginsPage logos, details and services', () => {
     expect(within(form).getByRole('button', { name: 'Connect' })).toBeDisabled();
     await user.type(within(form).getByRole('textbox', { name: 'Name (letters, digits, dashes)' }), 'My Svc');
     await user.type(within(form).getByRole('textbox', { name: 'Address of the service (https)' }), 'https://svc.example/mcp');
-    await user.selectOptions(within(form).getByRole('combobox', { name: 'Kind of connection' }), 'sse');
+    await user.click(within(form).getByRole('button', { name: 'Kind of connection' }));
+    await user.click(screen.getByRole('option', { name: 'SSE' }));
     await user.click(within(form).getByRole('button', { name: 'Connect' }));
     expect(api.connectService).toHaveBeenCalledWith({ name: 'my-svc', url: 'https://svc.example/mcp', transport: 'sse' });
     await user.click(screen.getByRole('tab', { name: /Installed/ }));

@@ -1,6 +1,9 @@
 import { useSyncExternalStore } from 'react';
+import { findTheme } from './codeTheme.ts';
 
 /** Preferences that only the browser needs (the server keeps its own, see the Settings page). */
+export type TranscriptView = 'normal' | 'thinking' | 'detailed';
+
 export type ClientSettings = {
   /** Warn before the tab is closed while an agent is working. */
   confirmClose: boolean;
@@ -20,6 +23,16 @@ export type ClientSettings = {
   notifyEnabled: boolean;
   /** Warn when an agent's limit falls to 10 % or less. */
   limitAlerts: boolean;
+  /** Light syntax theme for code blocks & diffs */
+  codeThemeLight: string;
+  /** Dark syntax theme for code blocks & diffs */
+  codeThemeDark: string;
+  /** Custom monospace font family for code & terminal */
+  codeFontFamily: string;
+  /** Code font size in pixels (default 13) */
+  codeFontSize: number;
+  /** Default transcript view for sessions: normal, thinking, detailed */
+  defaultTranscriptView: TranscriptView;
 };
 
 export const DEFAULT_CLIENT_SETTINGS: ClientSettings = {
@@ -32,16 +45,55 @@ export const DEFAULT_CLIENT_SETTINGS: ClientSettings = {
   soundEnabled: true,
   notifyEnabled: false,
   limitAlerts: true,
+  codeThemeLight: 'claude-light',
+  codeThemeDark: 'claude-dark',
+  codeFontFamily: '',
+  codeFontSize: 13,
+  defaultTranscriptView: 'normal',
 };
 
 const KEY = 'somecode.settings';
+
+export function applyAppearanceSettings(settings: ClientSettings): void {
+  if (typeof document === 'undefined') return;
+  const root = document.documentElement;
+  if (settings.codeFontFamily && settings.codeFontFamily.trim()) {
+    root.style.setProperty('--font-mono', `"${settings.codeFontFamily.trim()}", ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace`);
+  } else {
+    root.style.removeProperty('--font-mono');
+  }
+  // The syntax theme is read by the highlighter; this attribute tells open code blocks to colour themselves again.
+  root.dataset['codeTheme'] = `${settings.codeThemeLight}|${settings.codeThemeDark}`;
+  for (const [mode, def] of [['light', findTheme(settings.codeThemeLight, true)], ['dark', findTheme(settings.codeThemeDark, false)]] as const) {
+    root.style.setProperty(`--diff-add-bg-${mode}`, def.addBg);
+    root.style.setProperty(`--diff-del-bg-${mode}`, def.delBg);
+  }
+  if (settings.codeFontSize && settings.codeFontSize >= 10 && settings.codeFontSize <= 24) {
+    root.style.setProperty('--code-font-size', `${settings.codeFontSize}px`);
+  } else {
+    root.style.removeProperty('--code-font-size');
+  }
+}
 
 function read(): ClientSettings {
   try {
     const raw = JSON.parse(globalThis.localStorage?.getItem(KEY) ?? '{}') as Partial<ClientSettings>;
     const next = { ...DEFAULT_CLIENT_SETTINGS };
-    for (const key of Object.keys(DEFAULT_CLIENT_SETTINGS) as (keyof ClientSettings)[]) {
-      if (typeof raw[key] === 'boolean') next[key] = raw[key];
+    if (typeof raw.confirmClose === 'boolean') next.confirmClose = raw.confirmClose;
+    if (typeof raw.openPanelAtStart === 'boolean') next.openPanelAtStart = raw.openPanelAtStart;
+    if (typeof raw.preventSleep === 'boolean') next.preventSleep = raw.preventSleep;
+    if (typeof raw.showAdvancedOptions === 'boolean') next.showAdvancedOptions = raw.showAdvancedOptions;
+    if (typeof raw.autoContinueSubagents === 'boolean') next.autoContinueSubagents = raw.autoContinueSubagents;
+    if (typeof raw.subagentsEnabled === 'boolean') next.subagentsEnabled = raw.subagentsEnabled;
+    if (typeof raw.soundEnabled === 'boolean') next.soundEnabled = raw.soundEnabled;
+    if (typeof raw.notifyEnabled === 'boolean') next.notifyEnabled = raw.notifyEnabled;
+    if (typeof raw.limitAlerts === 'boolean') next.limitAlerts = raw.limitAlerts;
+    if (typeof raw.codeThemeLight === 'string') next.codeThemeLight = raw.codeThemeLight;
+    if (typeof raw.codeThemeDark === 'string') next.codeThemeDark = raw.codeThemeDark;
+    if (typeof raw.codeFontFamily === 'string') next.codeFontFamily = raw.codeFontFamily;
+    if (typeof raw.codeFontSize === 'number' && Number.isFinite(raw.codeFontSize)) next.codeFontSize = raw.codeFontSize;
+    if (raw.defaultTranscriptView === 'normal' || raw.defaultTranscriptView === 'thinking' || raw.defaultTranscriptView === 'detailed') {
+      next.defaultTranscriptView = raw.defaultTranscriptView;
     }
     return next;
   } catch {
@@ -50,6 +102,7 @@ function read(): ClientSettings {
 }
 
 let current: ClientSettings = read();
+applyAppearanceSettings(current);
 const listeners = new Set<() => void>();
 
 export function getClientSettings(): ClientSettings {
@@ -61,6 +114,7 @@ export function updateClientSettings(patch: Partial<ClientSettings>): void {
   try {
     globalThis.localStorage?.setItem(KEY, JSON.stringify(current));
   } catch {}
+  applyAppearanceSettings(current);
   for (const listener of listeners) listener();
 }
 
@@ -70,6 +124,7 @@ export function resetClientSettingsForTests(): void {
     globalThis.localStorage?.removeItem(KEY);
   } catch {}
   current = { ...DEFAULT_CLIENT_SETTINGS };
+  applyAppearanceSettings(current);
   for (const listener of listeners) listener();
 }
 

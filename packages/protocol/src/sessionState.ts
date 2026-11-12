@@ -14,7 +14,8 @@ export type PermissionOption = { id: string; name: string; kind: string };
 export type ToolContentView =
   | { type: 'text'; text: string }
   | { type: 'diff'; path: string; oldText: string | null; newText: string }
-  | { type: 'terminal'; terminalId: string };
+  | { type: 'terminal'; terminalId: string }
+  | { type: 'image'; data: string; mimeType: string };
 
 export type PlanEntry = { content: string; status: string; priority: string };
 
@@ -53,7 +54,20 @@ export type Item =
       detail?: string;
       /** A question the agent asks; answered with `answer` rather than by picking an option. */
       form?: { fields: FormField[] };
+      /** A research plan to start, edit or cancel. */
+      plan?: { steps: string[] };
+      /** Once a research plan is started: how far each of its steps is (the agent ticks them off). */
+      progress?: PlanEntry[];
       answer?: FormAnswer;
+    }
+  | {
+      kind: 'verification';
+      key: string;
+      id: string;
+      status: 'running' | 'passed' | 'failed';
+      round: number;
+      checks: { name: string; command: string; status: 'pending' | 'running' | 'passed' | 'failed'; output?: string; ms?: number }[];
+      willFix?: boolean;
     }
   | { kind: 'unsupported'; key: string; sessionUpdate: string }
   /** A turn the agent failed (`turn_end` with an error); rendered with the code's message. */
@@ -145,6 +159,8 @@ function toToolContent(raw: unknown[]): ToolContentView[] {
       out.push({ type: 'diff', path: c.path, oldText: isString(c.oldText) ? c.oldText : null, newText: c.newText });
     } else if (c.type === 'terminal' && isString(c.terminalId)) {
       out.push({ type: 'terminal', terminalId: c.terminalId });
+    } else if (c.type === 'image' && isString(c.data) && isString(c.mimeType) && /^image\/(png|jpeg|webp|gif)$/.test(c.mimeType)) {
+      out.push({ type: 'image', data: c.data, mimeType: c.mimeType });
     }
   }
   return out;
@@ -265,6 +281,7 @@ export function applyEvent(state: SessionState, stored: StoredEvent): SessionSta
             resolved: false,
             ...(e.detail !== undefined ? { detail: e.detail } : {}),
             ...(e.form !== undefined ? { form: e.form } : {}),
+            ...(e.plan !== undefined ? { plan: e.plan } : {}),
           },
         ],
       };
@@ -277,6 +294,12 @@ export function applyEvent(state: SessionState, stored: StoredEvent): SessionSta
           (i) => (i.kind === 'permission' ? { ...i, resolved: true, ...(e.answer !== undefined ? { answer: e.answer } : {}) } : i),
         ),
       };
+    case 'verification': {
+      const card = { kind: 'verification' as const, id: e.id, status: e.status, round: e.round, checks: e.checks, ...(e.willFix !== undefined ? { willFix: e.willFix } : {}) };
+      const at = items.findIndex((i) => i.kind === 'verification' && i.id === e.id);
+      if (at >= 0) return { ...current, items: items.map((i, n) => (n === at ? { ...card, key: i.key } : i)) };
+      return { ...current, items: [...items, { ...card, key }] };
+    }
     case 'usage':
       return { ...current, usage: { used: e.used, size: e.size } };
     case 'status':
@@ -285,8 +308,18 @@ export function applyEvent(state: SessionState, stored: StoredEvent): SessionSta
       return { ...current, items: [...items, { kind: 'unsupported', key, sessionUpdate: e.sessionUpdate }] };
     case 'turn_end':
       return e.error ? { ...current, items: [...items, { kind: 'error', key, code: e.error.code }] } : current;
-    case 'plan':
-      return { ...current, plan: e.entries.map((p) => ({ content: p.content, status: p.status, priority: p.priority })) };
+    case 'plan': {
+      const entries = e.entries.map((p) => ({ content: p.content, status: p.status, priority: p.priority }));
+      // The steps of a started research plan are shown on its own card, so they are not shown a second time as a checklist.
+      const research = items.findLastIndex((i) => {
+        const steps = i.kind === 'permission' && i.plan && i.resolved ? i.answer?.['steps'] : undefined;
+        return Array.isArray(steps) && steps.length === entries.length && steps.every((s, n) => s === entries[n]!.content);
+      });
+      if (research >= 0) {
+        return { ...current, items: mapItem(items, (i) => i === items[research], (i) => (i.kind === 'permission' ? { ...i, progress: entries } : i)), plan: null };
+      }
+      return { ...current, plan: entries };
+    }
     case 'config_options': {
       // Journals written before the typed shape may hold raw SDK options: ignore what doesn't fit.
       const parsed = configOptionSchema.array().safeParse(e.options);

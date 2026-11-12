@@ -10,14 +10,24 @@ import type { AgentRegistry } from '../agents/registry.ts';
 import { dataDir } from '../config.ts';
 import { createIconCache, type IconCache } from '../plugins/icons.ts';
 import { createPluginService, type PluginService } from '../plugins/service.ts';
+import { disableScoutSkill, ensureScoutSkill } from '../scout/skill.ts';
+import { runScout } from '../scout/runner.ts';
+import { disableClaudeSkill, ensureClaudeSkill } from '../claude-subagent/skill.ts';
+import { runClaudeSubagent } from '../claude-subagent/runner.ts';
+import { createUsageHistory, type UsageHistoryService } from '../usage/history.ts';
 import { createUsageService, type UsageService } from '../usage/service.ts';
+import { homedir } from 'node:os';
 import { approvalOption, trimModeOption } from '../permissions/approval.ts';
 import { defaultApprovalLevel, readSettings, settingsPatchSchema, updateSettings } from '../settings.ts';
 import type { SessionManager } from '../sessions/manager.ts';
 import type { Store } from '../store/store.ts';
 import { bearerToken, originAllowed, tokenMatches } from './auth.ts';
+import type { LaunchCodes } from './launch.ts';
 import { mountWorkspaceRoutes, TerminalService } from '../workspace/index.ts';
 import { describeIssues, statusFor, toWireError } from './errors.ts';
+import { mountAgentToolRoutes } from './agentTools.ts';
+import { withResearchMode } from '../research/mode.ts';
+import type { Scheduler } from '../scheduler/scheduler.ts';
 
 export type AppDeps = {
   store: Store;
@@ -28,14 +38,22 @@ export type AppDeps = {
   origin: () => string;
   staticDir?: string;
   terminals?: TerminalService;
+  /** One-time codes that the interface trades for the token (see `launch.ts`). */
+  launchCodes?: LaunchCodes;
   /** Test seam: the cache behind `GET /api/agents/:id/options`. */
   optionsProbe?: OptionsProbe;
   /** Test seam: where `GET /api/usage` gets its figures. */
   usage?: UsageService;
+  /** Test seam: where `GET /api/usage/history` reads token use from. */
+  usageHistory?: UsageHistoryService;
   /** Test seam: plugins and skills (rooted at a throw-away home folder). */
   plugins?: PluginService;
   /** Test seam: the logo cache behind `GET /api/plugins/icon/:owner`. */
   icons?: IconCache;
+  /** Starts scheduled tasks (and "run now" for one). */
+  scheduler?: Scheduler;
+  /** Test seam: scout subagent runner. */
+  scoutRunner?: typeof runScout;
 };
 
 const MAX_BODY_BYTES = 1024 * 1024;
@@ -135,8 +153,10 @@ export function createApp(deps: AppDeps): Hono {
   const { store, registry, manager, token } = deps;
   const probe = deps.optionsProbe ?? createOptionsProbe();
   const usage = deps.usage ?? createUsageService(store);
+  const usageHistory = deps.usageHistory ?? createUsageHistory({ home: homedir() });
   const plugins = deps.plugins ?? createPluginService();
   const icons = deps.icons ?? createIconCache(join(dataDir(process.env), 'icons'));
+  const scout = deps.scoutRunner ?? runScout;
   const app = new Hono();
 
   app.onError((err, c) => {
@@ -150,7 +170,8 @@ export function createApp(deps: AppDeps): Hono {
     if (!originAllowed(c.req.header('origin'), deps.origin())) {
       throw new SomeCodeError('forbidden', 'origin not allowed');
     }
-    if (isApi(c.req.path) && !tokenMatches(token, bearerToken(c.req.header('authorization')))) {
+    const isLaunch = c.req.method === 'POST' && c.req.path === '/api/launch';
+    if (isApi(c.req.path) && !isLaunch && !tokenMatches(token, bearerToken(c.req.header('authorization')))) {
       throw new SomeCodeError('unauthorized', 'missing or invalid token');
     }
     await next();
@@ -166,6 +187,7 @@ export function createApp(deps: AppDeps): Hono {
   );
 
   if(deps.terminals) mountWorkspaceRoutes(app, {store,registry,terminals:deps.terminals});
+  mountAgentToolRoutes(app, { store, manager, ...(deps.scheduler ? { scheduler: deps.scheduler } : {}), agents: () => registry.list().map((d) => d.id) });
 
   app.get('/api/agents', async (c) => c.json(await agentStatuses(registry)));
 
@@ -180,13 +202,33 @@ export function createApp(deps: AppDeps): Hono {
     }
     const options = await probe.options(driver, realpathSync(resolve(path)));
     // The same additions a live session makes: no self-approving modes, plus the access level (the default one).
-    return c.json({ options: [...options.map(trimModeOption), approvalOption(defaultApprovalLevel(readSettings(store)))] });
+    return c.json({ options: [...withResearchMode(options.map(trimModeOption), false), approvalOption(defaultApprovalLevel(readSettings(store)))] });
+  });
+
+  // The page trades the one-time code in its address for the token. The only call that needs no token.
+  app.post('/api/launch', async (c) => {
+    const { code } = await readJson(c, z.object({ code: z.string().min(8).max(100) }));
+    if (!deps.launchCodes?.redeem(code)) throw new SomeCodeError('unauthorized', 'unknown or used launch code');
+    return c.json({ token });
   });
 
   app.get('/api/settings', (c) => c.json(readSettings(store)));
-  app.put('/api/settings', async (c) => c.json(updateSettings(store, await readJson(c, settingsPatchSchema))));
+  app.put('/api/settings', async (c) => {
+    const patch = await readJson(c, settingsPatchSchema);
+    const updated = updateSettings(store, patch);
+    if (patch.scoutSubagent !== undefined) {
+      if (patch.scoutSubagent) void ensureScoutSkill().catch(() => {});
+      else void disableScoutSkill().catch(() => {});
+    }
+    if (patch.claudeSubagent !== undefined) {
+      if (patch.claudeSubagent) void ensureClaudeSkill().catch(() => {});
+      else void disableClaudeSkill().catch(() => {});
+    }
+    return c.json(updated);
+  });
 
   // What each agent last reported about its subscription limits (only what it really sent).
+  app.get('/api/usage/history', async (c) => c.json(await usageHistory.get(Number(c.req.query('days') ?? 365) || 365, c.req.query('refresh') === '1')));
   app.get('/api/usage', async (c) => c.json(await usage.all(registry.list().map((d) => ({ id: d.id, label: d.label })), c.req.query('refresh') === '1')));
 
   // Plugins (Claude's marketplace) and skills (SKILL.md folders) of the agents on this computer.
@@ -234,6 +276,69 @@ export function createApp(deps: AppDeps): Hono {
   app.delete('/api/skills/:agent/:name', async (c) => {
     await plugins.removeSkill(c.req.param('agent'), c.req.param('name'));
     return c.json({ ok: true });
+  });
+
+  app.post('/api/scout', async (c) => {
+    const settings = readSettings(store);
+    if (!settings.scoutSubagent) {
+      throw new SomeCodeError('forbidden', 'Scout subagent is disabled in settings');
+    }
+    const query = await readJson(
+      c,
+      z.object({
+        task: z.string().min(1).max(10_000),
+        cwd: z.string().optional(),
+        model: z.string().optional(),
+        timeoutMs: z.number().int().min(1000).max(600_000).optional(),
+        files: z.array(z.string()).optional(),
+      }),
+    );
+    const result = await scout({
+      ...query,
+      model: query.model || settings.scoutModel,
+      effort: settings.scoutEffort,
+    });
+    return c.json(result);
+  });
+
+  app.post('/api/claude-subagent', async (c) => {
+    const settings = readSettings(store);
+    if (!settings.claudeSubagent) {
+      throw new SomeCodeError('forbidden', 'Claude subagent is disabled in settings');
+    }
+    const query = await readJson(
+      c,
+      z.object({
+        task: z.string().min(1).max(10_000),
+        cwd: z.string().optional(),
+        model: z.string().optional(),
+        effort: z.string().optional(),
+        timeoutMs: z.number().int().min(1000).max(600_000).optional(),
+        files: z.array(z.string()).optional(),
+        sessionId: z.string().optional(),
+        parentToolCallId: z.string().optional(),
+      }),
+    );
+    const sessionId = query.sessionId;
+    const parentToolCallId = query.parentToolCallId;
+    const result = await runClaudeSubagent({
+      ...query,
+      model: query.model || settings.claudeModel,
+      effort: query.effort || (settings.claudeEffort !== 'default' ? settings.claudeEffort : undefined),
+      onToolCall: (child) => {
+        if (sessionId) {
+          try {
+            deps.manager.emitClaudeChildCall(sessionId, {
+              ...child,
+              parentToolCallId,
+            });
+          } catch {
+            // ignore if session closed or invalid
+          }
+        }
+      },
+    });
+    return c.json(result);
   });
 
   app.get('/api/projects', (c) => c.json(store.listProjects()));
@@ -284,6 +389,14 @@ export function createApp(deps: AppDeps): Hono {
   });
 
   app.post('/api/sessions/:id/resume', async c => c.json(await manager.resumeSession(c.req.param('id'))));
+  app.post('/api/sessions/:id/rewind', async (c) => {
+    const { beforeSeq } = await readJson(
+      c,
+      z.object({ beforeSeq: z.number().int().min(1) }),
+    );
+    await manager.rewindSession(c.req.param('id'), beforeSeq);
+    return c.json({ ok: true });
+  });
   app.get('/api/sessions/:id/history', c => c.json(manager.history(c.req.param('id'), c.req.query('beforeSeq') === undefined ? undefined : Number(c.req.query('beforeSeq')), c.req.query('limit') === undefined ? undefined : Number(c.req.query('limit')))));
 
   app.get('/api/sessions/:id/events', (c) => {

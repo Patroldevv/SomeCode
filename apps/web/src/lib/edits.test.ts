@@ -44,6 +44,33 @@ describe('edits from raw input and failed tools', () => {
   });
 });
 
+describe('editsOfTurn', () => {
+  it('extracts edits for the specific turn matching userKey', async () => {
+    const { editsOfTurn } = await import('./edits.ts');
+    const items = [
+      user('u1'),
+      tool('t1', 'first.ts', null, 'hello\n'),
+      user('u2'),
+      tool('t2', 'second.ts', null, 'world\n'),
+      user('u3'),
+    ];
+    const turn1 = editsOfTurn(items, 'u1');
+    expect(turn1.map((f) => f.path)).toEqual(['first.ts']);
+
+    const allFromTurn1 = editsOfTurn(items, 'u1', true);
+    expect(allFromTurn1.map((f) => f.path)).toEqual(['first.ts', 'second.ts']);
+
+    const turn2 = editsOfTurn(items, 'u2');
+    expect(turn2.map((f) => f.path)).toEqual(['second.ts']);
+
+    const turn3 = editsOfTurn(items, 'u3');
+    expect(turn3).toEqual([]);
+
+    const nonExistent = editsOfTurn(items, 'unknown');
+    expect(nonExistent).toEqual([]);
+  });
+});
+
 describe('withEditsRows', () => {
   it('keeps a summary after every finished turn, and waits for the running one to finish', async () => {
     const { withEditsRows } = await import('./edits.ts');

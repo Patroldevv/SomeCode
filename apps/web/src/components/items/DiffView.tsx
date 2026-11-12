@@ -3,8 +3,9 @@ import { t } from '../../i18n/index.ts';
 import { buildDiff, type DiffLine } from '../../lib/diffView.ts';
 
 // Tints derived from the status tokens, so both themes follow automatically.
-const ADD_BG = 'bg-[color-mix(in_srgb,var(--success)_13%,transparent)]';
-const DEL_BG = 'bg-[color-mix(in_srgb,var(--danger)_13%,transparent)]';
+// The tints come from the chosen code theme (see `applyAppearanceSettings`), by default from the status tokens.
+const ADD_BG = 'bg-[var(--diff-add-bg)]';
+const DEL_BG = 'bg-[var(--diff-del-bg)]';
 const ROW = 'flex whitespace-pre no-underline pr-3';
 const GUTTER = 'w-6 shrink-0 select-none text-center';
 
@@ -55,7 +56,10 @@ function Row({ line }: { line: DiffLine }) {
 export function DiffView({ path, oldText, newText }: { path: string; oldText: string | null; newText: string }) {
   const { lines, truncated } = useMemo(() => buildDiff(oldText, newText), [oldText, newText]);
   return (
-    <figure className="min-w-0 overflow-hidden rounded-md border border-border bg-bg font-mono text-xs leading-5">
+    <figure
+      style={{ fontSize: 'var(--code-font-size, 12px)' }}
+      className="min-w-0 overflow-hidden rounded-md border border-border bg-bg font-mono leading-5"
+    >
       <figcaption className="flex min-w-0 items-center gap-2 border-b border-border bg-bg-subtle px-2.5 py-1 text-text-muted">
         <span className="min-w-0 truncate" title={path}>
           {path}

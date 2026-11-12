@@ -97,6 +97,18 @@ export function createWorkspaceApi(token: string) {
         "POST",
         {},
       ),
+    rewindSession: (sessionId: string, beforeSeq: number) =>
+      call<{ ok: boolean }>(
+        `/api/sessions/${encodeURIComponent(sessionId)}/rewind`,
+        "POST",
+        { beforeSeq },
+      ),
+    revert: (id: string, req?: { files?: Array<{ path: string; content?: string | null }>; paths?: string[] }) =>
+      call<{ ok: boolean; reverted: string[] }>(
+        `/api/projects/${encodeURIComponent(id)}/revert`,
+        "POST",
+        req ?? {},
+      ),
   };
 }
 export type WorkspaceApi = ReturnType<typeof createWorkspaceApi>;

@@ -85,6 +85,23 @@ describe('UsageMenu', () => {
     expect(load).toHaveBeenLastCalledWith(false);
   });
 
+  it('offers the detailed page and closes itself when it is opened', async () => {
+    const onOpenDetails = vi.fn();
+    render(<UsageMenu load={async () => usage} onOpenDetails={onOpenDetails} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Usage' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Detailed usage' }));
+    expect(onOpenDetails).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it('draws each window as a bar with the percent left', async () => {
+    vi.useFakeTimers({ toFake: ['Date'], now });
+    render(<UsageMenu load={async () => usage} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Usage' }));
+    expect(await screen.findByRole('progressbar', { name: '5-hour' })).toHaveAttribute('aria-valuenow', '76');
+    expect(screen.getByRole('progressbar', { name: 'Weekly' })).toHaveAttribute('aria-valuenow', '53');
+  });
+
   it('closes on Escape', async () => {
     render(<UsageMenu load={async () => []} />);
     await userEvent.click(screen.getByRole('button', { name: 'Usage' }));

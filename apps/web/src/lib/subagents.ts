@@ -31,10 +31,91 @@ function field(input: Record<string, unknown>, ...names: string[]): string | und
 }
 
 /**
+ * Checks whether a tool call represents a Gemini Scout subagent run.
+ */
+export function isScoutCall(item: ToolItem): boolean {
+  // Only a command that runs it: loading the scout skill, or reading a file that mentions it, is not a run.
+  if (/^(?:run\s+|bash:?\s+|\$\s*)?somecode-scout(?:\s|$)/i.test(item.title.trim())) return true;
+  if (!isRecord(item.rawInput)) return false;
+  // The scout as a tool of its own (SomeCode's MCP server): a call named for the scout that carries a task.
+  if (/scout/i.test(item.title) && typeof item.rawInput['task'] === 'string') return true;
+  for (const key of ['command', 'CommandLine', 'cmd', 'commandLine', 'toolSummary']) {
+    const v = item.rawInput[key];
+    if (typeof v === 'string' && /(?:^|[\s;&|(`'"])somecode-scout(?:\s|$)/i.test(v) && !/^(?:cat|less|head|tail|grep|rg|ls|which|type)\s/i.test(v.trim())) return true;
+  }
+  return false;
+}
+
+/** Extracts the search / inspection task given to somecode-scout. */
+export function extractScoutTask(item: ToolItem): string {
+  let text = '';
+  if (isRecord(item.rawInput)) {
+    const task = item.rawInput['task'];
+    if (typeof task === 'string' && task.trim()) return task.trim();
+    for (const key of ['toolSummary', 'description']) {
+      const s = item.rawInput[key];
+      if (typeof s === 'string' && s.trim()) return s.trim();
+    }
+    for (const key of ['CommandLine', 'command', 'cmd', 'commandLine']) {
+      const v = item.rawInput[key];
+      if (typeof v === 'string' && v.trim()) {
+        text = v.trim();
+        break;
+      }
+    }
+  }
+  if (!text) text = item.title;
+  const quoted = text.match(/somecode-scout(?:\s+--[\w-]+(?:\s+\S+)?)*\s+["']([^"'\n]+)["']/i);
+  if (quoted?.[1]) return quoted[1].trim();
+  const unquoted = text.match(/somecode-scout(?:\s+--[\w-]+(?:\s+\S+)?)*\s+([^\s;]+(?:\s+[^\s;-][^\s;]*)*)/i);
+  if (unquoted?.[1]) return unquoted[1].trim();
+  return 'Workspace inspection';
+}
+
+/**
+ * Checks whether a tool call represents a Claude Code subagent run.
+ */
+export function isClaudeCall(item: ToolItem): boolean {
+  if (/^(?:run\s+|bash:?\s+|\$\s*)?somecode-claude(?:\s|$)/i.test(item.title.trim())) return true;
+  if (!isRecord(item.rawInput)) return false;
+  for (const key of ['command', 'CommandLine', 'cmd', 'commandLine', 'toolSummary']) {
+    const v = item.rawInput[key];
+    if (typeof v === 'string' && /(?:^|[\s;&|(`'"])somecode-claude(?:\s|$)/i.test(v) && !/^(?:cat|less|head|tail|grep|rg|ls|which|type)\s/i.test(v.trim())) return true;
+  }
+  return false;
+}
+
+/** Extracts the task given to somecode-claude. */
+export function extractClaudeTask(item: ToolItem): string {
+  let text = '';
+  if (isRecord(item.rawInput)) {
+    for (const key of ['toolSummary', 'description']) {
+      const s = item.rawInput[key];
+      if (typeof s === 'string' && s.trim()) return s.trim();
+    }
+    for (const key of ['CommandLine', 'command', 'cmd', 'commandLine']) {
+      const v = item.rawInput[key];
+      if (typeof v === 'string' && v.trim()) {
+        text = v.trim();
+        break;
+      }
+    }
+  }
+  if (!text) text = item.title;
+  const quoted = text.match(/somecode-claude(?:\s+--[\w-]+(?:\s+\S+)?)*\s+["']([^"'\n]+)["']/i);
+  if (quoted?.[1]) return quoted[1].trim();
+  const unquoted = text.match(/somecode-claude(?:\s+--[\w-]+(?:\s+\S+)?)*\s+([^\s;]+(?:\s+[^\s;-][^\s;]*)*)/i);
+  if (unquoted?.[1]) return unquoted[1].trim();
+  return 'Code reasoning and review';
+}
+
+/**
  * Whether the tool call is the sub-agent hand-off itself: Claude's Task and OpenCode's task name a `subagent_type`;
- * Antigravity's `invoke_subagent` carries a `Role`, a `Prompt` and a `TypeName`.
+ * Antigravity's `invoke_subagent` carries a `Role`, a `Prompt` and a `TypeName`; SomeCode's Scout runs Gemini 3.8 Flash;
+ * SomeCode's Claude runs Claude Code.
  */
 export function isSubagentCall(item: ToolItem): boolean {
+  if (isScoutCall(item) || isClaudeCall(item)) return true;
   if (!isRecord(item.rawInput)) return false;
   if (field(item.rawInput, 'subagent_type') !== undefined) return true;
   if (field(item.rawInput, 'Role') !== undefined && field(item.rawInput, 'Prompt') !== undefined) return true;
@@ -43,6 +124,22 @@ export function isSubagentCall(item: ToolItem): boolean {
 
 /** Who the sub-agent is and what it was asked to do, from the hand-off call. */
 export function describeSubagentCall(item: ToolItem): { name: string; description?: string; prompt?: string } {
+  if (isScoutCall(item)) {
+    const prompt = extractScoutTask(item);
+    return {
+      name: 'Gemini Scout',
+      description: 'Gemini 3.8 Flash',
+      prompt,
+    };
+  }
+  if (isClaudeCall(item)) {
+    const prompt = extractClaudeTask(item);
+    return {
+      name: 'Claude Subagent',
+      description: 'Claude Code',
+      prompt,
+    };
+  }
   const input = isRecord(item.rawInput) ? item.rawInput : {};
   const type = field(input, 'subagent_type', 'TypeName');
   const role = field(input, 'Role');
@@ -101,6 +198,9 @@ export function subagentsOf(items: readonly Item[]): Subagent[] {
         if (outStr) output = outStr.trim();
         else output = JSON.stringify(item.rawOutput, null, 2);
       }
+    }
+    if (output && /exit=\d+\s*$/i.test(output)) {
+      output = output.replace(/\s*exit=\d+\s*$/i, '').trim();
     }
     // Launch confirmation is not a finished task report
     const isLaunchOutput = output && (output.includes('Created the following subagent') || (output.includes('"conversationId"') && !output.includes('Message')));

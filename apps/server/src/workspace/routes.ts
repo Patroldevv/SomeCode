@@ -4,7 +4,7 @@ import { SomeCodeError } from '@somecode/protocol';
 import { homedir } from 'node:os';
 import type { Store } from '../store/store.ts';
 import type { AgentRegistry } from '../agents/registry.ts';
-import { browseFolders, listFiles, previewFile, projectPath, searchFiles } from './files.ts';
+import { browseFolders, listFiles, previewFile, projectPath, revertProjectFiles, searchFiles } from './files.ts';
 import type { TerminalService } from './terminals.ts';
 
 export type WorkspaceDeps = { store: Store; registry: AgentRegistry; terminals: TerminalService };
@@ -18,6 +18,15 @@ async function body<T>(c: Context, schema: z.ZodType<T>): Promise<T> {
 const createBody = z.object({ agentId: z.string().min(1).max(100).optional() });
 const inputBody = z.object({ data: z.string().max(65536) });
 const resizeBody = z.object({ cols: z.number().int(), rows: z.number().int() });
+const revertBody = z.object({
+  paths: z.array(z.string().min(1)).optional(),
+  files: z.array(
+    z.object({
+      path: z.string().min(1),
+      content: z.string().nullable().optional(),
+    }),
+  ).optional(),
+});
 const LOGIN = new Map<string, { command: string; args: string[] }>([
   ['claude', { command: 'claude', args: ['auth', 'login'] }],
   ['opencode', { command: 'opencode', args: ['auth', 'login'] }],
@@ -48,6 +57,11 @@ export function mountWorkspaceRoutes(app: Hono, { store, registry, terminals }: 
     return c.json(await previewFile(project(c.req.param('id')).path, path));
   });
   app.get('/api/projects/:id/search', async (c) => c.json(await searchFiles(project(c.req.param('id')).path, c.req.query('q') ?? '')));
+  app.post('/api/projects/:id/revert', async (c) => {
+    const p = project(c.req.param('id'));
+    const data = await body(c, revertBody);
+    return c.json(await revertProjectFiles(p.path, data));
+  });
   app.post('/api/projects/:id/terminals', async (c) => {
     const { root } = await projectPath(project(c.req.param('id')).path);
     const { agentId } = await body(c, createBody);

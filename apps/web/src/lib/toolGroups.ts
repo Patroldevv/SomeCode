@@ -12,7 +12,8 @@ export type ToolGroupRow = {
 export function isRegularTool(row: unknown): row is ToolItem {
   if (typeof row !== 'object' || row === null) return false;
   const item = row as Item;
-  return item.kind === 'tool' && !isSubagentCall(item) && !item.parent;
+  // A call that returned a picture (a screenshot) stays a row of its own, so the picture is seen in the conversation.
+  return item.kind === 'tool' && !isSubagentCall(item) && !item.parent && !item.content.some((c) => c.type === 'image');
 }
 
 /**

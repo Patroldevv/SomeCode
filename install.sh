@@ -35,7 +35,7 @@ else
 fi
 
 if [ "$uninstall" -eq 1 ]; then
-  rm -rf "$home_dir" "$bin_dir/somecode" "$apps_dir/somecode.desktop" "$icon_dir/somecode.svg"
+  rm -rf "$home_dir" "$bin_dir/somecode" "$bin_dir/somecode-scout" "$bin_dir/somecode-claude" "$apps_dir/somecode.desktop" "$icon_dir/somecode.svg"
   command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$apps_dir" 2>/dev/null || true
   say "SomeCode removed (your chats in ~/.local/share/somecode-data or the app data folder are kept)."
   exit 0
@@ -129,6 +129,16 @@ cat > "$bin_dir/somecode" <<LAUNCH
 exec "$node_bin" "$home_dir/bin/somecode.ts" "\$@"
 LAUNCH
 chmod +x "$bin_dir/somecode"
+cat > "$bin_dir/somecode-scout" <<LAUNCH
+#!/bin/sh
+exec "$node_bin" "$home_dir/bin/somecode-scout.ts" "\$@"
+LAUNCH
+chmod +x "$bin_dir/somecode-scout"
+cat > "$bin_dir/somecode-claude" <<LAUNCH
+#!/bin/sh
+exec "$node_bin" "$home_dir/bin/somecode-claude.ts" "\$@"
+LAUNCH
+chmod +x "$bin_dir/somecode-claude"
 
 # An entry for the application menu and desktop search, with an icon.
 mkdir -p "$apps_dir" "$icon_dir"

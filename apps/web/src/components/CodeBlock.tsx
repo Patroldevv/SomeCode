@@ -156,7 +156,7 @@ export function CodeBlock({
     });
     observer.observe(document.documentElement, {
       attributes: true,
-      attributeFilter: ["data-theme"],
+      attributeFilter: ["data-theme", "data-code-theme"],
     });
     return () => observer.disconnect();
   }, [scheduler]);
@@ -184,7 +184,8 @@ export function CodeBlock({
       </figcaption>
       <pre
         data-lang={lang}
-        className="m-0 min-w-0 max-w-full overflow-x-auto whitespace-pre px-3 py-2 font-mono text-[0.85em] leading-relaxed"
+        style={{ fontSize: 'var(--code-font-size, 13px)' }}
+        className="m-0 min-w-0 max-w-full overflow-x-auto whitespace-pre px-3 py-2 font-mono leading-relaxed"
       >
         <code>
           {usable ? (

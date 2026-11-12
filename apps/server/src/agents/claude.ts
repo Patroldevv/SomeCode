@@ -39,7 +39,8 @@ export function createClaudeDriver(env: NodeJS.ProcessEnv = process.env): AgentD
     launch: () => {
       const entry = adapterEntry();
       if (!entry) throw new SomeCodeError('agent_not_installed', 'the Claude ACP adapter is not installed');
-      return { command: process.execPath, args: [entry] };
+      // Newer models return no thinking text unless asked for a summary, so no thought would ever show in the chat.
+      return { command: process.execPath, args: [entry], env: { CLAUDE_CODE_THINKING_DISPLAY: env['CLAUDE_CODE_THINKING_DISPLAY'] ?? 'summarized' } };
     },
     detect: async (): Promise<AgentStatus> => {
       const version = await runBounded('claude', ['--version'], env);

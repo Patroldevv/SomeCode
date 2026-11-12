@@ -7,6 +7,7 @@ import { PermissionCard } from './items/PermissionCard.tsx';
 import { ThinkingBlock } from './items/ThinkingBlock.tsx';
 import { ToolCard } from './items/ToolCard.tsx';
 import { UnsupportedRow } from './items/UnsupportedRow.tsx';
+import { VerificationCard } from './items/VerificationCard.tsx';
 import { UserMessage } from './items/UserMessage.tsx';
 
 export type ItemRowProps = {
@@ -23,6 +24,7 @@ export type ItemRowProps = {
   onToggle: (key: string) => void;
   /** The agent's sign-in command; shown under an `auth_required` failure. */
   signInHint?: string;
+  onUndoMessage?: (item: Item) => void;
 };
 
 /**
@@ -30,7 +32,7 @@ export type ItemRowProps = {
  * reference and `live`/`answered` are booleans, so streaming into the last item re-renders that row only
  * (and e.g. `ToolCard`'s diff cache is not churned by every parent render).
  */
-export const ItemRow = memo(function ItemRow({ item, live, answered, onRespond, expanded, onToggle, signInHint }: ItemRowProps) {
+export const ItemRow = memo(function ItemRow({ item, live, answered, onRespond, expanded, onToggle, signInHint, onUndoMessage }: ItemRowProps) {
   const toggle = () => onToggle(item.key);
   switch (item.kind) {
     case 'user': {
@@ -39,8 +41,15 @@ export const ItemRow = memo(function ItemRow({ item, live, answered, onRespond, 
         item.text.startsWith('Sub-agent') ||
         item.text.includes('incelemeyi tamamladı') ||
         item.text.includes('completed their tasks');
-      if (isSubagentContinue) return null;
-      return <UserMessage text={item.text} images={item.images} local={item.local === true} />;
+      if (isSubagentContinue || item.text.startsWith('[SomeCode check]')) return null;
+      return (
+        <UserMessage
+          text={item.text}
+          images={item.images}
+          local={item.local === true}
+          onUndo={onUndoMessage ? () => onUndoMessage(item) : undefined}
+        />
+      );
     }
     case 'agent':
       return <AgentMessage text={item.text} />;
@@ -50,6 +59,8 @@ export const ItemRow = memo(function ItemRow({ item, live, answered, onRespond, 
       return <ToolCard item={item} expanded={expanded} onToggle={toggle} />;
     case 'permission':
       return <PermissionCard item={item} answered={answered} onRespond={onRespond} />;
+    case 'verification':
+      return <VerificationCard item={item} />;
     case 'error':
       return <ErrorCard code={item.code} {...(signInHint ? { signInHint } : {})} />;
     case 'unsupported':

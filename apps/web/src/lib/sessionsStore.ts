@@ -18,6 +18,8 @@ export type SessionsStore = {
   apply(sessionId: string, stored: StoredEvent): void;
   /** Adds the optimistic user item for a prompt that was just sent. Notifies synchronously. */
   addLocalUser(sessionId: string, text: string, images?: ImageAttachment[]): void;
+  /** Rewinds the session's items to before the specified item key. Notifies synchronously. */
+  rewindTo(sessionId: string, userKey: string): void;
   /** Forgets the session's state (so a replay can rebuild it); its draft is kept. Notifies on the next frame. */
   reset(sessionId: string): void;
   setSnapshot(sessionId: string, history: SessionHistoryPage): void;
@@ -147,6 +149,22 @@ export function createSessionsStore(options: SessionsStoreOptions = {}): Session
       replace(sessionId,next,notifyLater);
     },
     addLocalUser: (sessionId, text, images) => replace(sessionId, addLocalUserMessage(get(sessionId), text, images), notifyNow),
+    rewindTo: (sessionId, userKey) => {
+      const state = get(sessionId);
+      const index = state.items.findIndex((item) => item.key === userKey);
+      if (index < 0) return;
+      const items = state.items.slice(0, index);
+      const retainedKeys = new Set(items.map((i) => i.key));
+      const itemSeqs = Object.fromEntries(
+        Object.entries(state.itemSeqs ?? {}).filter(([k]) => retainedKeys.has(k)),
+      );
+      replace(sessionId, {
+        ...state,
+        items,
+        itemSeqs,
+        plan: null,
+      }, notifyNow);
+    },
     reset: (sessionId) => {
       if (sessions.delete(sessionId)) notifyLater();
     },

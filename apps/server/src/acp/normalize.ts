@@ -48,6 +48,7 @@ function normalizeToolContent(items: ToolCallContent[] | null | undefined): Tool
       case 'terminal':
         return { type: 'terminal', terminalId: item.terminalId };
       default:
+        if (item.content.type === 'image') return { type: 'image', data: item.content.data, mimeType: item.content.mimeType };
         return { type: 'text', text: blockText(item.content) };
     }
   });
@@ -322,4 +323,16 @@ export function normalizeConfigOptions(options: SessionConfigOption[]): ConfigOp
     });
   }
   return { type: 'config_options', options: out };
+}
+
+export const MAX_PLAN_STEPS = 20;
+const MAX_STEP_LENGTH = 400;
+
+/** The steps of a research plan as the user left them: trimmed, without empty ones, within the limits. */
+export function sanitizePlanSteps(value: unknown): string[] {
+  if (!Array.isArray(value)) throw new SomeCodeError('bad_request', 'steps: expected a list');
+  const steps = value.map((v) => (typeof v === 'string' ? v.trim() : '')).filter((v) => v !== '');
+  if (steps.length === 0) throw new SomeCodeError('bad_request', 'steps: a plan needs at least one step');
+  if (steps.length > MAX_PLAN_STEPS) throw new SomeCodeError('bad_request', `steps: at most ${MAX_PLAN_STEPS} steps`);
+  return steps.map((v) => v.slice(0, MAX_STEP_LENGTH));
 }

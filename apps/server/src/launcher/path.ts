@@ -1,6 +1,24 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { delimiter, join } from 'node:path';
+
+/**
+ * Some Linux desktop shells (e.g. Quickshell) start apps with `RLIMIT_RTTIME = 0` (`Max realtime timeout = 0 us`)
+ * while leaving `RLIMIT_RTPRIO = 99`. Any child (such as Electron's renderer audio thread) that then enters `SCHED_RR`
+ * is sent `SIGKILL` (exit 9) by the kernel on its first microsecond of CPU time. Dropping `rtprio` to 0 keeps all
+ * threads on normal scheduling so the kernel never kills them.
+ */
+export function sanitizeRealtimeLimit(): void {
+  if (process.platform !== 'linux') return;
+  try {
+    const limits = readFileSync('/proc/self/limits', 'utf8');
+    if (/^Max realtime timeout\s+0\s+/m.test(limits)) {
+      execFileSync('prlimit', ['--rtprio=0', `--pid=${process.pid}`], { stdio: 'ignore' });
+    }
+  } catch {
+    // Best effort: if /proc or prlimit is unavailable, continue normally.
+  }
+}
 
 /** Where agent CLIs usually put themselves; checked even when the PATH we were started with misses them. */
 export function commonBinDirs(home: string): string[] {
@@ -41,5 +59,6 @@ export function enrichedPath(current: string, extra: string[], exists: (dir: str
  * (agy, claude, opencode) would look missing. Called once at start.
  */
 export function useLoginPath(env: NodeJS.ProcessEnv = process.env, home: string = env.HOME ?? ''): void {
+  sanitizeRealtimeLimit();
   env.PATH = enrichedPath(env.PATH ?? '', [...loginShellPath(env.SHELL).split(delimiter), ...(home ? commonBinDirs(home) : [])]);
 }

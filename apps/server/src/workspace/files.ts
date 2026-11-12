@@ -1,7 +1,9 @@
 import { constants } from 'node:fs';
-import { open, opendir, realpath, stat } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { mkdir, open, opendir, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { homedir } from 'node:os';
+import { promisify } from 'node:util';
 import { SomeCodeError } from '@somecode/protocol';
 
 const MAX_PATH = 4096;
@@ -155,4 +157,90 @@ export async function searchFiles(projectRoot: string, query: string): Promise<{
     } catch { /* A concurrently removed or inaccessible folder should not fail all search. */ }
   }
   return { paths: paths.sort((a, b) => a.localeCompare(b)) };
+}
+
+const execFileAsync = promisify(execFile);
+export const defaultGitRun = async (args: string[], cwd: string): Promise<{ stdout: string; stderr: string }> => {
+  const { stdout, stderr } = await execFileAsync('git', args, { cwd });
+  return { stdout: String(stdout), stderr: String(stderr) };
+};
+
+export async function safeProjectPath(projectRoot: string, path: string): Promise<{ root: string; target: string }> {
+  checkPath(path);
+  if (isAbsolute(path) || path.split(/[\\/]/).includes('..')) {
+    throw new SomeCodeError('forbidden', 'path must stay inside the project');
+  }
+  const trustedRoot = resolve(projectRoot);
+  const root = await realpath(trustedRoot);
+  if (root !== trustedRoot) {
+    throw new SomeCodeError('forbidden', 'project root changed; select the folder again');
+  }
+  const target = resolve(root, path);
+  if (!contained(root, target)) {
+    throw new SomeCodeError('forbidden', 'path must stay inside the project');
+  }
+  try {
+    const realTarget = await realpath(target);
+    if (!contained(root, realTarget)) {
+      throw new SomeCodeError('forbidden', 'path must stay inside the project');
+    }
+  } catch {
+    // Non-existent path is allowed for pending writes / removals
+  }
+  return { root, target };
+}
+
+export async function revertProjectFiles(
+  projectRoot: string,
+  options: {
+    files?: Array<{ path: string; content?: string | null }>;
+    paths?: string[];
+  } = {},
+  runGit: (args: string[], cwd: string) => Promise<{ stdout: string; stderr: string }> = defaultGitRun,
+): Promise<{ ok: boolean; reverted: string[] }> {
+  const trustedRoot = resolve(projectRoot);
+  const root = await realpath(trustedRoot);
+  if (root !== trustedRoot) throw new SomeCodeError('forbidden', 'project root changed; select the folder again');
+
+  const reverted: string[] = [];
+
+  if (options.files && options.files.length > 0) {
+    for (const item of options.files) {
+      const { target } = await safeProjectPath(root, item.path);
+      if (item.content === null || item.content === undefined) {
+        try {
+          await rm(target, { force: true });
+          reverted.push(item.path);
+        } catch {
+          // ignore if already deleted
+        }
+      } else {
+        await mkdir(dirname(target), { recursive: true });
+        await writeFile(target, item.content, 'utf8');
+        reverted.push(item.path);
+      }
+    }
+    return { ok: true, reverted };
+  }
+
+  // Git-based rollback
+  const hasGit = await stat(join(root, '.git')).then((s) => s.isDirectory() || s.isFile()).catch(() => false);
+  if (!hasGit) {
+    throw new SomeCodeError('bad_request', 'Project is not a git repository and no previous file content was provided');
+  }
+
+  if (options.paths && options.paths.length > 0) {
+    for (const p of options.paths) {
+      await safeProjectPath(root, p);
+    }
+    await runGit(['checkout', 'HEAD', '--', ...options.paths], root);
+    await runGit(['clean', '-f', '--', ...options.paths], root).catch(() => {});
+    reverted.push(...options.paths);
+  } else {
+    await runGit(['checkout', 'HEAD', '--', '.'], root);
+    await runGit(['clean', '-fd', '.'], root).catch(() => {});
+    reverted.push('.');
+  }
+
+  return { ok: true, reverted };
 }

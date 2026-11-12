@@ -32,13 +32,35 @@ function FileRow({ file }: { file: EditedFile }) {
 
 /**
  * The summary the agent leaves after a turn that changed files: how many, the first few with their line counts
- * (the rest unfold), and a button that opens the matching tool cards with their diffs.
+ * (the rest unfold), a view button, and a rollback (undo) button to safely revert changes from this turn.
  */
-export function EditsCard({ files, onView }: { files: EditedFile[]; onView: () => void }) {
+export function EditsCard({
+  files,
+  onView,
+  onRollback,
+}: {
+  files: EditedFile[];
+  onView: () => void;
+  onRollback?: () => Promise<void> | void;
+}) {
   const [all, setAll] = useState(false);
+  const [reverting, setReverting] = useState(false);
+  const [reverted, setReverted] = useState(false);
   const listId = useId();
   const head = files.slice(0, VISIBLE);
   const rest = files.slice(VISIBLE);
+
+  const handleRollback = async () => {
+    if (!onRollback || reverting || reverted) return;
+    setReverting(true);
+    try {
+      await onRollback();
+      setReverted(true);
+    } finally {
+      setReverting(false);
+    }
+  };
+
   return (
     <section aria-label={t('edits.label')} className="edits-card font-ui">
       <div className="flex items-center gap-3 px-4 py-3.5">
@@ -46,9 +68,31 @@ export function EditsCard({ files, onView }: { files: EditedFile[]; onView: () =
           <SymbolIcon name="diff" className="size-[18px]" />
         </span>
         <p className="min-w-0 flex-1 truncate text-[15px] font-medium text-text">{plural('edits.title', files.length)}</p>
-        <button type="button" onClick={onView} className="edits-button">
-          {t('edits.view')}
-        </button>
+        <div className="flex items-center gap-1.5 shrink-0">
+          <button type="button" onClick={onView} className="edits-button">
+            {t('edits.view')}
+          </button>
+          {onRollback && (
+            <button
+              type="button"
+              onClick={() => void handleRollback()}
+              disabled={reverting || reverted}
+              className={`edits-button inline-flex items-center gap-1.5 transition-colors ${
+                reverted ? 'text-success border-success/40' : 'hover:text-danger hover:border-danger/40'
+              }`}
+              title={reverted ? t('edits.reverted') : t('edits.rollback')}
+            >
+              {reverting ? (
+                <span className="loading-ring size-3 border-[1.5px]" />
+              ) : reverted ? (
+                <SymbolIcon name="check" className="size-3.5" />
+              ) : (
+                <SymbolIcon name="undo" className="size-3.5" />
+              )}
+              <span>{reverted ? t('edits.reverted') : t('edits.rollback')}</span>
+            </button>
+          )}
+        </div>
       </div>
       <ul className="border-t border-border py-1.5">
         {head.map((f) => (

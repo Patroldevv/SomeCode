@@ -1,6 +1,6 @@
 import type { ConfigOption } from '@somecode/protocol';
 import { t } from '../i18n/index.ts';
-import { chipLabel, chipOrder, isEffortOption, isPrimaryOption } from '../lib/configChips.ts';
+import { chipLabel, chipOrder, isEffortOption, isPrimaryOption, localizeModeOptions } from '../lib/configChips.ts';
 import { Menu } from './Menu.tsx';
 import { ApprovalPicker } from './ApprovalPicker.tsx';
 import { ModelPicker } from './ModelPicker.tsx';
@@ -23,7 +23,7 @@ export function ConfigChips({
   /** Also show the extra pickers (e.g. Agent), not just mode, model and effort. */
   advanced?: boolean;
 }) {
-  const ordered = chipOrder(options).filter((o) => advanced || isPrimaryOption(o));
+  const ordered = chipOrder(options ? localizeModeOptions(options) : options).filter((o) => advanced || isPrimaryOption(o));
   if (ordered.length === 0) return null;
 
   // Model and effort share one control (the card with the slider) when the agent reports both.

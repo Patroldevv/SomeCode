@@ -4,7 +4,7 @@ import { SidebarIcon } from './icons.tsx';
 import { SymbolIcon } from './SymbolIcon.tsx';
 
 export type MenuEntry =
-  | { label: string; shortcut?: string; disabled?: boolean; onSelect: () => void }
+  | { label: string; shortcut?: string; disabled?: boolean; checked?: boolean; onSelect: () => void }
   | { separator: true }
   | { heading: string };
 export type MenuDef = { id: string; label: string; items: MenuEntry[] };
@@ -54,7 +54,8 @@ function MenuBar({ menus }: { menus: MenuDef[] }) {
                   <button
                     key={i}
                     type="button"
-                    role="menuitem"
+                    role={item.checked === undefined ? 'menuitem' : 'menuitemradio'}
+                    {...(item.checked === undefined ? {} : { 'aria-checked': item.checked })}
                     disabled={item.disabled}
                     className="profile-item"
                     onClick={() => {
@@ -63,6 +64,7 @@ function MenuBar({ menus }: { menus: MenuDef[] }) {
                     }}
                   >
                     <span className="flex-1 text-left">{item.label}</span>
+                    {item.checked && <SymbolIcon name="check" className="size-3.5 shrink-0" />}
                     {item.shortcut && <span className="profile-kbd">{item.shortcut}</span>}
                   </button>
                 ),

@@ -32,6 +32,7 @@ export function ModelPicker({
   effort,
   disabled,
   pendingId,
+  placement = 'up',
   onChange,
 }: {
   model: ConfigOption;
@@ -39,6 +40,8 @@ export function ModelPicker({
   effort?: ConfigOption;
   disabled: boolean;
   pendingId: string | null;
+  /** Which way the card opens: above the control (message box) or below it (settings). */
+  placement?: 'up' | 'down';
   onChange: (configId: string, value: string) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -124,7 +127,7 @@ export function ModelPicker({
           role="dialog"
           aria-label={label}
           onKeyDown={onKeyDown}
-          className="picker-card"
+          className={`picker-card ${placement === 'down' ? 'picker-card-down' : ''}`}
         >
           {view === 'effort' && effort ? (
             <EffortView

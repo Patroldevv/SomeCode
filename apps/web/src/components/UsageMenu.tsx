@@ -1,51 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
-import { currentLanguage, t, type MessageKey } from '../i18n/index.ts';
+import { t } from '../i18n/index.ts';
+import { AgentUsageBlock } from './UsageBars.tsx';
+import { percentLeft, toneOf } from '../lib/usageFormat.ts';
+export { resetLabel, rowName } from '../lib/usageFormat.ts';
 import type { AgentLimit, AgentUsage } from '../lib/api.ts';
 import { SymbolIcon } from './SymbolIcon.tsx';
-
-/** A window's name in our words; an unknown one shows the agent's own name. */
-function limitName(type: string): string {
-  const key = `usage.window.${type}` as MessageKey;
-  const text = t(key);
-  return text === undefined || text.startsWith('usage.window.') ? type.replace(/_/g, ' ') : text;
-}
-
-/** "14:20" today, "Mon 03:00" within the week, a date beyond: when a window renews. */
-export function resetLabel(resetsAt: number, now = Date.now()): string {
-  const locale = currentLanguage();
-  const at = new Date(resetsAt);
-  const time = new Intl.DateTimeFormat(locale, { hour: '2-digit', minute: '2-digit' }).format(at);
-  const dayMs = 24 * 3600 * 1000;
-  const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
-  const days = Math.round((startOfDay(at) - startOfDay(new Date(now))) / dayMs);
-  if (days === 0) return time;
-  if (days > 0 && days < 7) return `${new Intl.DateTimeFormat(locale, { weekday: 'short' }).format(at)} ${time}`;
-  return `${new Intl.DateTimeFormat(locale, { day: 'numeric', month: 'short' }).format(at)} ${time}`;
-}
-
-/** "Gemini Models · 5-hour" for an agent that groups its windows, "5-hour" for the rest. */
-export function rowName(limit: AgentLimit): string {
-  const [, window] = limit.type.split('|');
-  return window !== undefined && limit.label ? `${limit.label} · ${limitName(window)}` : limitName(limit.type);
-}
-
-const compact = (n: number): string => (n >= 1e9 ? `${(n / 1e9).toFixed(1)}B` : n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n));
-
-function Limit({ limit, now }: { limit: AgentLimit; now: number }) {
-  const expired = limit.resetsAt !== null && limit.resetsAt < now;
-  const left = limit.used === null || expired ? null : Math.max(0, Math.round((1 - limit.used) * 100));
-  return (
-    <li className="usage-row">
-      <span className="min-w-0 flex-1">{rowName(limit)}</span>
-      <span className="text-right">
-        <span className={left !== null && left <= 10 ? 'text-warn' : 'text-text'}>
-          {left !== null ? t('usage.left', { percent: left }) : expired ? t('usage.renewed') : t('usage.unknown')}
-        </span>
-        {limit.resetsAt !== null && !expired && <span className="usage-reset">{t('usage.resets', { when: resetLabel(limit.resetsAt, now) })}</span>}
-      </span>
-    </li>
-  );
-}
 
 /**
  * The usage button above the profile one: for every agent, the subscription windows it has reported (how much is
@@ -56,7 +15,7 @@ const POLL_MS = 5 * 60_000;
 /** Opening the menu asks again only when what it has is older than this (a refresh button press always asks). */
 const FRESH_MS = 60_000;
 
-export function UsageMenu({ load }: { load: (refresh?: boolean) => Promise<AgentUsage[]> }) {
+export function UsageMenu({ load, onOpenDetails }: { load: (refresh?: boolean) => Promise<AgentUsage[]>; onOpenDetails?: () => void }) {
   const [open, setOpen] = useState(false);
   const [usage, setUsage] = useState<AgentUsage[] | null>(null);
   const root = useRef<HTMLDivElement>(null);
@@ -103,10 +62,18 @@ export function UsageMenu({ load }: { load: (refresh?: boolean) => Promise<Agent
     };
   }, [open, load, refreshing]);
   const now = Date.now();
+  // The tightest window of any agent, drawn as a ring around the button: the answer at a glance.
+  const lowest = (usage ?? []).flatMap((a) => a.limits.map((l) => percentLeft(l, now))).filter((n): n is number => n !== null).reduce<number | null>((min, n) => (min === null || n < min ? n : min), null);
   return (
     <div ref={root} className="profile">
-      <button type="button" className="profile-button" aria-label={t('usage.title')} title={t('usage.title')} aria-haspopup="dialog" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
-        <SymbolIcon name="ring" className="size-[18px] text-text-muted" />
+      <button type="button" className="rail-button" data-anim="usage" aria-label={t('usage.title')} title={t('usage.title')} aria-haspopup="dialog" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
+        {lowest !== null && (
+          <svg className="rail-ring" viewBox="0 0 36 36" aria-hidden="true" data-tone={toneOf(lowest)}>
+            <circle className="rail-ring-track" cx="18" cy="18" r="16" />
+            <circle className="rail-ring-fill" cx="18" cy="18" r="16" pathLength={100} strokeDasharray={`${lowest} 100`} />
+          </svg>
+        )}
+        <SymbolIcon name="ring" className="size-[18px]" />
       </button>
       {open && (
         <div role="dialog" aria-label={t('usage.title')} className="profile-menu usage-menu">
@@ -117,29 +84,21 @@ export function UsageMenu({ load }: { load: (refresh?: boolean) => Promise<Agent
             </button>
           </div>
           {usage === null && <p className="usage-empty">{t('chat.loading')}</p>}
-          {usage?.map((agent) => (
-            <section key={agent.id} className="usage-agent" aria-label={agent.label}>
-              <h3>{agent.label}</h3>
-              {agent.limits.length > 0 && (
-                <ul>
-                  {agent.limits.map((l) => (
-                    <Limit key={l.type} limit={l} now={now} />
-                  ))}
-                </ul>
-              )}
-              {agent.stats && agent.stats.length > 0 && (
-                <p className="usage-empty">
-                  {t('usage.stats7d', {
-                    prompts: agent.stats.find((s) => s.key === 'prompts7d')?.value ?? 0,
-                    tokens: compact(agent.stats.find((s) => s.key === 'tokens7d')?.value ?? 0),
-                  })}
-                </p>
-              )}
-              {agent.error && <p className="usage-empty">{t(agent.error === 'signed_out' ? 'usage.signedOut' : 'usage.unavailable')}</p>}
-              {agent.limits.length === 0 && !agent.stats && !agent.error && <p className="usage-empty">{t('usage.none')}</p>}
-            </section>
-          ))}
+          {usage?.map((agent) => <AgentUsageBlock key={agent.id} agent={agent} now={now} />)}
           <p className="usage-note">{t('usage.note')}</p>
+          {onOpenDetails && (
+            <button
+              type="button"
+              className="usage-details"
+              onClick={() => {
+                setOpen(false);
+                onOpenDetails();
+              }}
+            >
+              {t('usage.details')}
+              <SymbolIcon name="external" className="size-3.5" />
+            </button>
+          )}
         </div>
       )}
     </div>

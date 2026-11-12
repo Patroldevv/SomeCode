@@ -15,7 +15,18 @@ function setup(over: Partial<React.ComponentProps<typeof SettingsPage>> = {}) {
     light: false,
     onTheme: vi.fn(),
     agents: [{ id: 'claude', label: 'Claude', installed: true, auth: 'signed_in' as const, version: '2.1' }],
-    serverSettings: { planAutoApprove: true, defaultApproval: 'ask' as const, agentGuide: true },
+    serverSettings: {
+      planAutoApprove: true,
+      defaultApproval: 'ask' as const,
+      agentGuide: true,
+      browserTool: 'local' as const,
+      scoutSubagent: false,
+      scoutModel: 'gemini-3.8-flash',
+      scoutEffort: 'default',
+      claudeSubagent: false,
+      claudeModel: 'sonnet',
+      claudeEffort: 'default',
+    },
     onRefreshAgents: vi.fn(),
     onSignIn: vi.fn(),
     onServerSetting: vi.fn(async () => {}),
@@ -24,6 +35,12 @@ function setup(over: Partial<React.ComponentProps<typeof SettingsPage>> = {}) {
   };
   render(<SettingsPage {...props} />);
   return { ...props, user: userEvent.setup() };
+}
+
+/** Opens one of the custom dropdowns and picks an entry by (the start of) its name. */
+async function pick(user: ReturnType<typeof userEvent.setup>, scope: { getByRole: typeof screen.getByRole }, dropdown: string, option: RegExp | string) {
+  await user.click(scope.getByRole('button', { name: dropdown }));
+  await user.click(screen.getByRole('option', { name: option }));
 }
 
 describe('SettingsPage', () => {
@@ -70,7 +87,7 @@ describe('SettingsPage', () => {
   it('sets the default permissions of new chats on the server', async () => {
     const { user, onServerSetting } = setup();
     await user.click(screen.getByRole('tab', { name: 'Permissions' }));
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Default permissions' }), 'full');
+    await pick(user, screen, 'Default permissions', /^Full access/);
     expect(onServerSetting).toHaveBeenCalledWith({ defaultApproval: 'full' });
   });
 
@@ -81,9 +98,9 @@ describe('SettingsPage', () => {
   });
 
   it('switches the theme and lists the agents, with the extra-pickers option explained', async () => {
-    const { user, onTheme } = setup();
+    const { user, onTheme, onServerSetting } = setup();
     await user.click(screen.getByRole('tab', { name: 'Appearance' }));
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Theme' }), 'light');
+    await pick(user, screen, 'Theme', 'Light');
     expect(onTheme).toHaveBeenCalledWith(true);
     await user.click(screen.getByRole('tab', { name: 'Agents' }));
     expect(screen.getByText('Claude')).toBeInTheDocument();
@@ -91,6 +108,8 @@ describe('SettingsPage', () => {
     const panel = within(screen.getByRole('tabpanel'));
     await user.click(panel.getByRole('switch', { name: 'Show extra pickers' }));
     expect(getClientSettings().showAdvancedOptions).toBe(true);
+    await pick(user, panel, 'Gemini Scout Sub-agent', /^Can be launched|^Allow|^Başlatılabilir|Can launch/);
+    expect(onServerSetting).toHaveBeenCalledWith({ scoutSubagent: true });
   });
 
   it('closes with the button and with Escape', async () => {
@@ -98,5 +117,14 @@ describe('SettingsPage', () => {
     await user.click(screen.getByRole('button', { name: 'Close settings' }));
     await user.keyboard('{Escape}');
     expect(onClose).toHaveBeenCalledTimes(2);
+  });
+
+  it('lets the browser tool for agents be switched between off, this computer and any address', async () => {
+    const { user, onServerSetting } = setup();
+    await user.click(screen.getByRole('tab', { name: 'Agents' }));
+    const dropdown = screen.getByRole('button', { name: 'Let agents use a browser' });
+    expect(dropdown).toHaveTextContent('This computer only');
+    await pick(user, screen, 'Let agents use a browser', 'Off');
+    expect(onServerSetting).toHaveBeenCalledWith({ browserTool: 'off' });
   });
 });

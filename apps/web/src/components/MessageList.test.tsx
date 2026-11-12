@@ -457,4 +457,38 @@ describe('MessageList', () => {
     render(<List items={[user('u1'), t1, t2, agent('a1')]} />);
     expect(screen.getByRole('button', { name: /2 actions/ })).toBeInTheDocument();
   });
+
+  describe('transcript view', () => {
+    const withView = (view: 'normal' | 'thinking' | 'detailed', items: Item[]) => (
+      <div style={{ height: VIEWPORT }}>
+        <MessageList items={items} plan={null} status="ready" answeredRequests={noAnswers} onRespond={noop} view={view} />
+      </div>
+    );
+
+    it('starts thoughts folded in the normal view and open in the thinking view, tools open only in the detailed one', () => {
+      const items = [user('u1'), thought('t1', 2000), tool('x1'), agent('a1')];
+      const { unmount } = render(withView('normal', items));
+      expect(screen.queryByText('thinking t1')).not.toBeInTheDocument();
+      unmount();
+      const thinking = render(withView('thinking', items));
+      expect(screen.getByText('thinking t1')).toBeInTheDocument();
+      expect(document.querySelector('[data-item-key="x1"] [aria-expanded="true"]')).toBeNull();
+      thinking.unmount();
+      render(withView('detailed', items));
+      expect(screen.getByText('thinking t1')).toBeInTheDocument();
+      expect(document.querySelector('[data-item-key="x1"] [aria-expanded="true"]')).not.toBeNull();
+    });
+
+    it('follows a change of view at once, and opens new thoughts as they arrive', () => {
+      const items = [user('u1'), thought('t1', 2000), agent('a1')];
+      const { rerender } = render(withView('normal', items));
+      expect(screen.queryByText('thinking t1')).not.toBeInTheDocument();
+      rerender(withView('thinking', items));
+      expect(screen.getByText('thinking t1')).toBeInTheDocument();
+      rerender(withView('thinking', [...items, thought('t2', 3000)]));
+      expect(screen.getByText('thinking t2')).toBeInTheDocument();
+      rerender(withView('normal', [...items, thought('t2', 3000)]));
+      expect(screen.queryByText('thinking t1')).not.toBeInTheDocument();
+    });
+  });
 });

@@ -4,6 +4,7 @@ import type { HighlightedLine } from '../lib/highlight.ts';
 import { highlightTokens } from '../lib/highlight.ts';
 import { COST_FACTOR, LARGE_CODE, MIN_GAP_MS, STABLE_MS } from './CodeBlock.tsx';
 import { setLanguageForTests } from '../i18n/index.ts';
+import { LocalImageProvider } from './LocalImage.tsx';
 import { Markdown } from './Markdown.tsx';
 
 // Deterministic: no real Shiki in jsdom (lib/highlight.test.ts covers it in node).
@@ -135,6 +136,17 @@ describe('Markdown: raw HTML and images', () => {
 });
 
 describe('Markdown: GFM and code', () => {
+  it('keeps table cells readable: they do not inherit the break-anywhere rule that squeezes a column to one letter', () => {
+    const { container } = render(<Markdown text={'| Alt Sistem | Puan |\n|---|---|\n| Oturum & Durum | 9.7 / 10 |'} />);
+    const cells = [...container.querySelectorAll('th, td')];
+    expect(cells).toHaveLength(4);
+    for (const cell of cells) {
+      expect(cell.className).toContain('[overflow-wrap:break-word]');
+      expect(cell.className).toContain('[word-break:normal]');
+      expect(cell.className).toContain('min-w-[4.5rem]');
+    }
+  });
+
   it('(e) renders a GFM table', () => {
     const { container } = render(<Markdown text={'| a | b |\n| - | - |\n| 1 | 2 |'} />);
     expect(container.querySelector('table')).not.toBeNull();
@@ -421,5 +433,31 @@ describe('CodeBlock scheduling while streaming (fake timers)', () => {
       vi.advanceTimersByTime(10_000);
     });
     expect(h.runs).toHaveLength(1);
+  });
+});
+
+describe('pictures given as a file path', () => {
+  it('asks the loader for them and shows them as a screenshot; the alt text stays while loading and when it fails', async () => {
+    const load = vi.fn(async (path: string) => (path.endsWith('ok.png') ? { data: 'AAAA', mimeType: 'image/png' } : null));
+    render(
+      <LocalImageProvider value={load}>
+        <Markdown text={'![Shot one](/home/me/ok.png)\n\n![Missing](/home/me/gone.png)'} />
+      </LocalImageProvider>,
+    );
+    expect(await screen.findByRole('img', { name: 'Shot one' })).toHaveAttribute('src', 'data:image/png;base64,AAAA');
+    expect(await screen.findByText('Missing')).toBeInTheDocument();
+    expect(load).toHaveBeenCalledWith('/home/me/ok.png');
+  });
+
+  it('still never turns a web image into a request', () => {
+    const load = vi.fn();
+    render(
+      <LocalImageProvider value={load}>
+        <Markdown text={'![Remote](https://example.com/a.png)'} />
+      </LocalImageProvider>,
+    );
+    expect(screen.queryByRole('img')).not.toBeInTheDocument();
+    expect(screen.getByText('Remote')).toBeInTheDocument();
+    expect(load).not.toHaveBeenCalled();
   });
 });

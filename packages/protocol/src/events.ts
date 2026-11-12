@@ -48,6 +48,8 @@ export const toolContentSchema = z.discriminatedUnion('type', [
     newText: z.string(),
   }),
   z.object({ type: z.literal('terminal'), terminalId: z.string() }),
+  /** A picture a tool returned (a browser screenshot). */
+  z.object({ type: z.literal('image'), data: z.string(), mimeType: z.string() }),
 ]);
 export type ToolContent = z.infer<typeof toolContentSchema>;
 
@@ -102,6 +104,8 @@ export const normalizedEventSchema = z.discriminatedUnion('type', [
     detail: z.string().optional(),
     /** A question to the user: the agent wants these fields filled in instead of picking one option. */
     form: z.object({ fields: z.array(formFieldSchema) }).optional(),
+    /** A research plan the user may edit, start or cancel (deep research): the answer carries the steps to follow. */
+    plan: z.object({ steps: z.array(z.string()) }).optional(),
   }),
   z.object({
     type: z.literal('permission_resolved'),
@@ -119,6 +123,29 @@ export const normalizedEventSchema = z.discriminatedUnion('type', [
     type: z.literal('turn_end'),
     stopReason: z.string(),
     error: z.object({ code: errorCodeSchema, message: z.string() }).optional(),
+  }),
+  /**
+   * The project's checks (tests, typecheck, lint) that SomeCode runs after a turn that changed files. Events with the
+   * same `id` update one card: first `running`, then each check as it finishes, then the result.
+   */
+  z.object({
+    type: z.literal('verification'),
+    id: z.string(),
+    status: z.enum(['running', 'passed', 'failed']),
+    /** 0 for the first run after the user's message; 1, 2, … after each automatic fix. */
+    round: z.number(),
+    checks: z.array(
+      z.object({
+        name: z.string(),
+        command: z.string(),
+        status: z.enum(['pending', 'running', 'passed', 'failed']),
+        /** The end of the output of a failed check. */
+        output: z.string().optional(),
+        ms: z.number().optional(),
+      }),
+    ),
+    /** The failure was handed to the agent to fix (it will start a new turn). */
+    willFix: z.boolean().optional(),
   }),
   /** How full the agent's context window is: tokens used of the window's size. Sent when a turn ends. */
   z.object({ type: z.literal('usage'), used: z.number(), size: z.number() }),

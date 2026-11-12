@@ -29,6 +29,7 @@ describe('parseSkillHeader', () => {
 describe('listSkills', () => {
   it('finds the user\'s skills (removable), plugin skills and built-in ones, and skips folders that are not skills', async () => {
     await put(join(home, '.claude/skills/mine/SKILL.md'), skill('mine', 'My skill'));
+    await put(join(home, '.claude/skills/scout/SKILL.md'), skill('scout', 'Scout subagent'));
     await put(join(home, '.claude/skills/not-a-skill/readme.md'), 'x');
     await put(join(home, '.claude/plugins/installed_plugins.json'), JSON.stringify({ plugins: { 'p@m': [{ installPath: join(home, 'cache/p') }] } }));
     await put(join(home, 'cache/p/skills/from-plugin/SKILL.md'), skill('from-plugin', 'Plugin skill'));
@@ -37,6 +38,7 @@ describe('listSkills', () => {
     const skills = await listSkills(home);
     expect(skills.map((s) => [s.agent, s.name, s.source, s.removable])).toEqual([
       ['claude', 'mine', 'user', true],
+      ['claude', 'scout', 'builtin', false],
       ['claude', 'from-plugin', 'plugin', false],
       ['agy', 'g', 'user', true],
       ['agy', 'core', 'builtin', false],
@@ -145,9 +147,11 @@ describe('add and remove a skill', () => {
     await expect(addSkill(home, ok)).rejects.toMatchObject({ code: 'bad_request', message: expect.stringContaining('already exists') });
   });
 
-  it('removes only a skill of the user\'s own folder', async () => {
+  it('removes only a skill of the user\'s own folder and prevents removing scout and claude', async () => {
     await addSkill(home, { agent: 'claude', name: 'mine', description: 'd', content: 'c' });
     await put(join(home, '.claude/skills/not-a-skill/readme.md'), 'x');
+    await expect(removeSkill(home, 'claude', 'scout')).rejects.toMatchObject({ code: 'forbidden' });
+    await expect(removeSkill(home, 'agy', 'claude')).rejects.toMatchObject({ code: 'forbidden' });
     await removeSkill(home, 'claude', 'mine');
     expect(existsSync(join(home, '.claude/skills/mine'))).toBe(false);
     await expect(removeSkill(home, 'claude', 'mine')).rejects.toMatchObject({ code: 'not_found' });

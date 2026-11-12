@@ -273,6 +273,25 @@ describe('createSessionsStore', () => {
     expect(store.getDraft('a')).toBe('draft a');
   });
 
+  it('rewindTo removes items from target userKey forward and emits', () => {
+    const store = createSessionsStore();
+    store.apply('s', ev(1, { type: 'user_message', text: 'first' }, 's'));
+    store.apply('s', ev(2, { type: 'agent_message', text: 'first reply' }, 's'));
+    store.apply('s', ev(3, { type: 'user_message', text: 'second' }, 's'));
+    store.apply('s', ev(4, { type: 'agent_message', text: 'second reply' }, 's'));
+
+    expect(store.get('s').items).toHaveLength(4);
+
+    const listener = vi.fn();
+    store.subscribe(listener);
+
+    // Rewind to '3'
+    store.rewindTo('s', '3');
+    expect(store.get('s').items).toHaveLength(2);
+    expect(store.get('s').items.map((i) => (i as any).text)).toEqual(['first', 'first reply']);
+    expect(listener).toHaveBeenCalled();
+  });
+
   it('get for an unknown id returns a stable empty state', () => {
     const store = createSessionsStore();
     const empty = store.get('nope');

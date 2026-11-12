@@ -7,6 +7,7 @@ import { ShieldIcon } from '../icons.tsx';
 import { Markdown } from '../Markdown.tsx';
 import { SymbolIcon } from '../SymbolIcon.tsx';
 import { answerSummary, QuestionForm } from './QuestionForm.tsx';
+import { ResearchPlanCard } from './ResearchPlanCard.tsx';
 
 type PermissionItem = Extract<Item, { kind: 'permission' }>;
 
@@ -32,6 +33,7 @@ export function PermissionCard({
   onRespond: (requestId: string, optionId: string | null, answer?: FormAnswer) => void;
 }) {
   const headingId = useId();
+  if (item.plan) return <ResearchPlanCard item={item} answered={answered} onRespond={onRespond} />;
   const form = item.form;
   const submitId = item.options[0]?.id ?? 'submit';
   return (
@@ -71,7 +73,7 @@ export function PermissionCard({
                 onClick={() => onRespond(item.requestId, o.id)}
                 className={`${BUTTON} ${o.kind.startsWith('allow') ? ALLOW : OTHER}`}
               >
-                {o.name}
+                {o.id === 'approve' ? t('permission.approve') : o.id === 'refuse' ? t('permission.refuse') : o.name}
               </button>
             ))}
           </div>

@@ -1,6 +1,8 @@
 import type { ConfigOption } from '@somecode/protocol';
 import type { ErrorCode } from '@somecode/protocol';
 
+import type { UsageHistory } from './usageStats.ts';
+
 export type AgentLimit = { type: string; label?: string; used: number | null; resetsAt: number | null; status: string; updatedAt: number };
 export type AgentUsage = {
   id: string;
@@ -39,7 +41,30 @@ export type ServiceInfo = {
 };
 export type SkillInfo = { agent: 'claude' | 'agy'; name: string; description: string; source: 'user' | 'plugin' | 'builtin'; removable: boolean; owner?: string };
 export type PluginsOverview = { plugins: PluginInfo[]; skills: SkillInfo[] };
-export type ServerSettings = { planAutoApprove: boolean; defaultApproval: 'ask' | 'auto' | 'full'; agentGuide: boolean };
+export type VerifyCheck = { name: string; command: string };
+export type VerifyConfig = { enabled: boolean; autoFix: boolean; maxFixes: number; checks: VerifyCheck[] };
+
+export type ServerSettings = {
+  planAutoApprove: boolean;
+  defaultApproval: 'ask' | 'auto' | 'full';
+  agentGuide: boolean;
+  agentTools?: boolean;
+  historySearch?: boolean;
+  projectMemory?: boolean;
+  autoMemory?: boolean;
+  scheduledTasks?: boolean;
+  autoChecks?: boolean;
+  researchPlan?: boolean;
+  researchDepth?: 'standard' | 'deep' | 'exhaustive';
+  researchEngines?: ('google' | 'yandex' | 'bing' | 'duckduckgo' | 'brave')[];
+  browserTool?: 'off' | 'local' | 'any';
+  scoutSubagent: boolean;
+  scoutModel?: string;
+  scoutEffort?: string;
+  claudeSubagent?: boolean;
+  claudeModel?: string;
+  claudeEffort?: string;
+};
 
 export type AgentInfo = {
   id: string;
@@ -53,6 +78,22 @@ export type AgentInfo = {
   installHint?: string;
 };
 export type ProjectInfo = { id: string; name: string; path: string };
+export type MemoryNote = { id: string; projectId: string; text: string; createdAt: number };
+export type ScheduledTaskInfo = {
+  id: string;
+  projectId: string;
+  project: string;
+  agentId: string;
+  title: string;
+  prompt: string;
+  /** "every 30 min", "every day at 09:00", "once, 12/11/2026 09:00". */
+  when: string;
+  enabled: boolean;
+  nextRun: number | null;
+  lastRun: number | null;
+  lastSessionId: string | null;
+  runs: number;
+};
 /** A session row as the server stores it (`createdAt` in ms since the epoch). */
 export type SessionInfo = { id: string; projectId: string; agentId: string; createdAt: number; title: string | null };
 
@@ -144,6 +185,8 @@ export function createApi(token: string) {
     removeSkill: (agent: string, name: string) => call<{ ok: true }>(`/api/skills/${encodeURIComponent(agent)}/${encodeURIComponent(name)}`, { method: 'DELETE', body: undefined }),
     /** What each agent last reported about its subscription limits. */
     usage: (refresh = false) => call<AgentUsage[]>(refresh ? '/api/usage?refresh=1' : '/api/usage'),
+    /** Tokens per day for the last year, from what the agents keep on this computer. */
+    usageHistory: (refresh = false) => call<UsageHistory>(refresh ? '/api/usage/history?refresh=1' : '/api/usage/history'),
     /** Preferences the server acts on. */
     settings: () => call<ServerSettings>('/api/settings'),
     updateSettings: (patch: Partial<ServerSettings>) => call<ServerSettings>('/api/settings', { method: 'PUT', body: patch }),
@@ -153,6 +196,54 @@ export function createApi(token: string) {
         (r) => r.options,
       ),
     projects: () => call<ProjectInfo[]>('/api/projects'),
+    /** Scheduled tasks: prompts that start a chat by themselves. */
+    tasks: () => call<{ tasks: ScheduledTaskInfo[] }>('/api/tasks').then((r) => r.tasks),
+    createTask: (input: { projectId: string; agentId: string; title: string; prompt: string; spec: { kind: 'once'; at: string } | { kind: 'every'; minutes: number } | { kind: 'daily'; at: string } }) =>
+      call<{ task: ScheduledTaskInfo }>('/api/tasks', { method: 'POST', body: input }).then((r) => r.task),
+    updateTask: (id: string, patch: { enabled?: boolean; title?: string }) => call<{ ok: true }>(`/api/tasks/${encodeURIComponent(id)}`, { method: 'PATCH', body: patch }),
+    deleteTask: (id: string) => call<{ ok: true }>(`/api/tasks/${encodeURIComponent(id)}`, { method: 'DELETE', body: undefined }),
+    runTask: (id: string) => call<{ sessionId: string }>(`/api/tasks/${encodeURIComponent(id)}/run`, { method: 'POST', body: {} }),
+    /** Notes saved for a project; every agent working in it is told them. */
+    memory: (projectId: string) => call<{ memories: MemoryNote[] }>(`/api/memory?projectId=${encodeURIComponent(projectId)}`).then((r) => r.memories),
+    addMemory: (projectId: string, text: string) => call<{ memory: MemoryNote }>('/api/memory', { method: 'POST', body: { projectId, text } }).then((r) => r.memory),
+    /** A picture an agent mentioned by file path, as base64 (null when it cannot be read). */
+    localImage: async (path: string): Promise<{ data: string; mimeType: string } | null> => {
+      try {
+        const res = await fetch(`/api/local-image?path=${encodeURIComponent(path)}`, { headers: { authorization: `Bearer ${token}` } });
+        if (!res.ok) return null;
+        const bytes = new Uint8Array(await res.arrayBuffer());
+        let binary = '';
+        for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+        return { data: btoa(binary), mimeType: res.headers.get('content-type') ?? 'image/png' };
+      } catch {
+        return null;
+      }
+    },
+    verifyConfig: (projectId: string) => call<{ config: VerifyConfig; suggested: VerifyCheck[] }>(`/api/projects/${encodeURIComponent(projectId)}/verify`),
+    saveVerifyConfig: (projectId: string, config: VerifyConfig) => call<{ config: VerifyConfig }>(`/api/projects/${encodeURIComponent(projectId)}/verify`, { method: 'PUT', body: config }).then((r) => r.config),
+    /** A new chat in the project where an agent works the checks out and proposes them (the user approves in the chat). */
+    askForChecks: (projectId: string, agentId: string, prompt: string) => call<{ sessionId: string }>(`/api/projects/${encodeURIComponent(projectId)}/verify/ask`, { method: 'POST', body: { agentId, prompt } }),
+    runChecks: (sessionId: string) => call<{ ok: true }>(`/api/sessions/${encodeURIComponent(sessionId)}/verify`, { method: 'POST', body: undefined }),
+    importMemory: (projectId: string, text: string) => call<{ added: number; skipped: number }>('/api/memory-import', { method: 'POST', body: { projectId, text } }),
+    /** Downloads every note and scheduled task as a .zip of Markdown files. */
+    exportMemory: async (): Promise<void> => {
+      let res: Response;
+      try {
+        res = await fetch('/api/memory-export', { headers: { authorization: `Bearer ${token}` } });
+      } catch {
+        throw new ApiError('network');
+      }
+      if (!res.ok) throw new ApiError('internal');
+      const url = URL.createObjectURL(await res.blob());
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'somecode-memory.zip';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    },
+    deleteMemory: (id: string) => call<{ ok: true }>(`/api/memory/${encodeURIComponent(id)}`, { method: 'DELETE', body: undefined }),
     addProject: (name: string, path: string) =>
       call<ProjectInfo>('/api/projects', { method: 'POST', body: { name, path } }),
     /** The project's sessions, oldest first. */

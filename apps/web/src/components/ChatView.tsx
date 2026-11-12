@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
 import { useAutoContinue } from "../hooks/useAutoContinue.ts";
 import { subagentsOf } from "../lib/subagents.ts";
+import { useTranscriptView } from "../lib/transcriptView.ts";
 import { SubagentWait } from "./SubagentWait.tsx";
 import type { ClientMessage, FormAnswer, ImageAttachment } from "@somecode/protocol";
 import { t, type MessageParams } from "../i18n/index.ts";
@@ -18,6 +19,9 @@ import {
 } from "../lib/sessionsStore.ts";
 import { Composer } from "./Composer.tsx";
 import { ConfigChips } from "./ConfigChips.tsx";
+import { ResearchFollowUps } from "./ResearchFollowUps.tsx";
+import { ResearchControlProvider } from "./items/ResearchContext.tsx";
+import { isResearchMode } from "../lib/configChips.ts";
 import { CrossIcon } from "./icons.tsx";
 import { MessageList } from "./MessageList.tsx";
 import { dotStatus, isBusyStatus, StatusDot } from "./StatusDot.tsx";
@@ -88,6 +92,7 @@ export function ChatView({
   onError,
   leading,
   signInHint,
+  onRunChecks,
   trailing,
   project,
   workspaceApi,
@@ -115,10 +120,13 @@ export function ChatView({
   leading: ReactNode;
   /** The session agent's sign-in command (from the agent list). */
   signInHint?: string;
+  /** Runs the project's checks now. */
+  onRunChecks?: () => void;
 }) {
   const [resuming, setResuming] = useState(false);
   const { showAdvancedOptions, autoContinueSubagents, subagentsEnabled } = useClientSettings();
   const state = useSession(store, sessionId);
+  const transcriptView = useTranscriptView(sessionId);
   const displayItems = useMemo(
     () => (state.olderItems?.length ? [...state.olderItems, ...state.items] : state.items),
     [state.olderItems, state.items],
@@ -166,6 +174,13 @@ export function ChatView({
       // Over the socket's payload limit the server would drop the connection and the prompt with it: refuse
       // up front and keep the draft (nothing sent, no optimistic item).
       onError("prompt_too_long", { limit: groupDigits(MAX_PROMPT_BYTES) });
+      return;
+    }
+
+    // /verify is not a message: it runs the project's checks now.
+    if (text.trim() === "/verify" && onRunChecks) {
+      onRunChecks();
+      store.setDraft(sessionId, "");
       return;
     }
 
@@ -266,8 +281,10 @@ export function ChatView({
     if (!send({ type: "cancel", sessionId })) onError("network");
   };
 
+  const researching = isResearchMode(state.configOptions);
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="chat-view flex min-h-0 flex-1 flex-col" data-research={researching || undefined}>
+      <div className="research-glow" data-on={researching || undefined} aria-hidden="true" />
       <ChatHeader leading={leading}>
         {project && (
           <span className="hidden items-center gap-1.5 text-xs text-text-muted sm:flex">
@@ -338,6 +355,7 @@ export function ChatView({
         </div>
       )}
       <div className="min-h-0 flex-1">
+        <ResearchControlProvider value={{ running: state.status === "running", stop: onCancel, researching, ...(onRunChecks ? { runChecks: onRunChecks } : {}) }}>
         <MessageList
           key={sessionId}
           items={displayItems}
@@ -346,14 +364,65 @@ export function ChatView({
           answeredRequests={answered}
           onRespond={onRespond}
           subagents={sessionSubagents}
+          view={transcriptView}
+          {...(project && workspaceApi
+            ? {
+                onRollbackTurn: async (files) => {
+                  const reqFiles = files.map((f) => ({
+                    path: f.path,
+                    content: f.changes[0]?.oldText ?? null,
+                  }));
+                  await workspaceApi.revert(project.id, { files: reqFiles });
+                },
+                onUndoTurn: async (item, files, revertFiles) => {
+                  if (revertFiles && files.length > 0) {
+                    try {
+                      const reqFiles = files.map((f) => ({
+                        path: f.path,
+                        content: f.changes[0]?.oldText ?? null,
+                      }));
+                      await workspaceApi.revert(project.id, { files: reqFiles });
+                    } catch {
+                      // ignore
+                    }
+                  }
+                  if ('text' in item && typeof item.text === 'string') {
+                    store.setDraft(sessionId, item.text);
+                  }
+                  const seq = state.itemSeqs?.[item.key] ?? Number(item.key);
+                  if (Number.isSafeInteger(seq) && seq > 0) {
+                    try {
+                      await workspaceApi.rewindSession(sessionId, seq);
+                    } catch {
+                      // ignore
+                    }
+                  }
+                  store.rewindTo(sessionId, item.key);
+                  setTimeout(() => {
+                    const textarea = document.querySelector<HTMLTextAreaElement>('textarea');
+                    if (textarea) {
+                      textarea.focus();
+                      const len = textarea.value.length;
+                      textarea.setSelectionRange(len, len);
+                    }
+                  }, 50);
+                },
+              }
+            : {})}
           {...(onOpenAgents ? { onOpenAgents } : {})}
           {...(signInHint ? { signInHint } : {})}
         />
+        </ResearchControlProvider>
       </div>
       <div className="mx-auto flex w-full max-w-3xl flex-col gap-2 px-4 pt-2 pb-3">
         {banner && <ErrorBanner message={banner} onDismiss={onDismissBanner} />}
         <SubagentWait running={runningSubagents} />
+        {researching && state.status === "ready" && (() => {
+          const last = displayItems[displayItems.length - 1];
+          return last?.kind === "agent" && last.text.length >= 900 ? <ResearchFollowUps onPick={(text) => onSend(text)} /> : null;
+        })()}
         <Composer
+          inChat
           projectId={project?.id}
           workspaceApi={workspaceApi}
           value={draft}

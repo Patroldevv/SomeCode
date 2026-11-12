@@ -105,7 +105,10 @@ async function skillsIn(dir: string, agent: SkillAgent, source: SkillInfo['sourc
     try {
       const header = parseSkillHeader(await readFile(join(dir, dirName, 'SKILL.md'), 'utf8'));
       const logo = owner ?? (header.author && ACCOUNT.test(header.author) ? header.author : undefined);
-      found.push({ agent, name: header.name ?? dirName, description: (header.description ?? '').slice(0, 400), source, removable: source === 'user', ...(logo ? { owner: logo } : {}) });
+      const isManaged = dirName === 'scout' || dirName === 'claude';
+      const effectiveSource = isManaged ? 'builtin' : source;
+      const removable = !isManaged && source === 'user';
+      found.push({ agent, name: header.name ?? dirName, description: (header.description ?? '').slice(0, 400), source: effectiveSource, removable, ...(logo ? { owner: logo } : {}) });
     } catch {
       // Not a skill folder.
     }
@@ -240,6 +243,9 @@ export async function addSkill(home: string, input: { agent: string; name: strin
 
 /** Removes a skill from the user's own folder (never one from a plugin or built in). */
 export async function removeSkill(home: string, agent: string, name: string): Promise<void> {
+  if (name === 'scout' || name === 'claude') {
+    throw new SomeCodeError('forbidden', 'This skill is managed by SomeCode settings and cannot be removed here');
+  }
   const { dir, root } = target(home, agent, name);
   const resolved = resolve(dir);
   if (!resolved.startsWith(resolve(root) + sep) || !(await exists(join(resolved, 'SKILL.md')))) throw new SomeCodeError('not_found', 'no such skill');

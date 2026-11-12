@@ -10,6 +10,7 @@ import { createRegistry } from '../agents/registry.ts';
 import type { AgentDriver } from '../agents/types.ts';
 import { openStore, type Store } from '../store/store.ts';
 import { fakeDriver } from '../../test-support/fake-driver.ts';
+import { readVerify, writeVerify } from '../verify/config.ts';
 import { SessionManager } from './manager.ts';
 
 let store: Store;
@@ -550,6 +551,55 @@ describe('cancel, respondPermission, setConfig', () => {
     expect((await rejection(manager.setConfig(id, 'approval', 'yolo'))).code).toBe('bad_request');
   });
 
+  it('offers deep research in the mode menu, keeps it as SomeCode\'s own mode (the agent stays plain) and remembers it', async () => {
+    setup(fakeDriver('mode_stale'));
+    const { id } = await manager.createSession(projectId, 'fake');
+    const modeOf = () => {
+      const last = [...store.eventsSince(id, 0)].reverse().find((e) => e.event.type === 'config_options')!.event;
+      return last.type === 'config_options' ? last.options.find((o) => o.id === 'mode')! : undefined;
+    };
+    expect(modeOf()?.choices.map((c) => c.value)).toEqual(['default', 'plan', 'deep_research']);
+    expect(modeOf()?.currentValue).toBe('default');
+    await manager.setConfig(id, 'mode', 'plan');
+    await vi.waitFor(() => expect(modeOf()?.currentValue).toBe('plan'));
+    await manager.setConfig(id, 'mode', 'deep_research');
+    // The agent itself was moved back to its plain mode; only the menu shows deep research.
+    expect(modeOf()?.currentValue).toBe('deep_research');
+    expect(store.getSetting(`research:${id}`)).toBe('1');
+    await manager.setConfig(id, 'mode', 'plan');
+    await vi.waitFor(() => expect(modeOf()?.currentValue).toBe('plan'));
+    expect(store.getSetting(`research:${id}`)).toBe('0');
+  });
+
+  it('puts a research plan to the user, lets them edit it and ticks the steps off', async () => {
+    setup(fakeDriver('basic'));
+    const { id } = await manager.createSession(projectId, 'fake');
+    const { requestId } = await manager.proposeResearchPlan(id, 'Quickshell survey', ['find repos', 'compare', 'report'], true);
+    const asked = store.eventsSince(id, 0).map((e) => e.event).find((e) => e.type === 'permission_request' && e.requestId === requestId);
+    expect(asked).toMatchObject({ plan: { steps: ['find repos', 'compare', 'report'] } });
+    expect(await manager.researchPlanState(requestId, 0)).toEqual({ state: 'pending' });
+    // The user edits a step, drops one and starts it.
+    manager.respondPermission(id, requestId, 'start', { steps: ['find repos', '  compare in depth  ', ''] });
+    expect(await manager.researchPlanState(requestId, 200)).toEqual({ state: 'started', steps: ['find repos', 'compare in depth'] });
+    expect(manager.researchProgress(id, 2, 'completed')).toEqual({ done: 1, total: 2 });
+    const plans = store.eventsSince(id, 0).map((e) => e.event).filter((e) => e.type === 'plan');
+    expect(plans.at(-1)).toMatchObject({ entries: [{ content: 'find repos', status: 'in_progress' }, { content: 'compare in depth', status: 'completed' }] });
+    // Finishing the running step starts the next one.
+    manager.researchProgress(id, 1, 'completed');
+    expect(store.eventsSince(id, 0).map((e) => e.event).filter((e) => e.type === 'plan').at(-1)).toMatchObject({ entries: [{ status: 'completed' }, { status: 'completed' }] });
+    expect(() => manager.researchProgress(id, 5, 'completed')).toThrow();
+  });
+
+  it('a cancelled research plan says so, and a plan without asking starts at once', async () => {
+    setup(fakeDriver('basic'));
+    const { id } = await manager.createSession(projectId, 'fake');
+    const { requestId } = await manager.proposeResearchPlan(id, 'Survey', ['a', 'b', 'c'], true);
+    manager.respondPermission(id, requestId, null);
+    expect(await manager.researchPlanState(requestId, 200)).toEqual({ state: 'cancelled' });
+    expect(await manager.proposeResearchPlan(id, 'Survey', ['x', 'y'], false)).toEqual({ requestId: 'auto', steps: ['x', 'y'] });
+    expect(store.eventsSince(id, 0).map((e) => e.event).filter((e) => e.type === 'plan').at(-1)).toMatchObject({ entries: [{ content: 'x' }, { content: 'y' }] });
+  });
+
   it('forwards setConfig and validates the session', async () => {
     setup(fakeDriver('basic'));
     const { id } = await manager.createSession(projectId, 'fake');
@@ -748,3 +798,169 @@ describe('closeAll', () => {
     expect(got).toHaveLength(delivered);
   });
 });
+
+describe('rewindSession', () => {
+  it('rewinds session events and keeps agent ready for the next prompt', async () => {
+    setup(fakeDriver('basic'));
+    const { id } = await manager.createSession(projectId, 'fake');
+    manager.prompt(id, 'turn 1');
+    await waitForType(id, 'turn_end', 1);
+
+    manager.prompt(id, 'turn 2');
+    await waitForType(id, 'turn_end', 2);
+
+    const events = store.eventsSince(id, 0);
+    const turn2 = events.find((e) => e.event.type === 'user_message' && (e.event as any).text === 'turn 2');
+    expect(turn2).toBeDefined();
+
+    await manager.rewindSession(id, turn2!.seq);
+
+    const remaining = store.eventsSince(id, 0);
+    expect(remaining.some((e) => e.seq >= turn2!.seq)).toBe(false);
+    expect(remaining.some((e) => e.event.type === 'user_message' && (e.event as any).text === 'turn 1')).toBe(true);
+
+    manager.prompt(id, 'turn 2 retry');
+    await waitForType(id, 'turn_end', 2);
+    const updated = store.eventsSince(id, 0);
+    expect(updated.some((e) => e.event.type === 'user_message' && (e.event as any).text === 'turn 2 retry')).toBe(true);
+  });
+});
+
+describe('checks after a turn', () => {
+  const verifications = (id: string) =>
+    store.eventsSince(id, 0).flatMap((e) => (e.event.type === 'verification' ? [e.event] : []));
+  const lastOf = (id: string, round: number) => verifications(id).filter((v) => v.round === round).at(-1);
+
+  it('runs the project\'s checks once a turn that changed files has ended, and hands a failure to the agent a limited number of times', async () => {
+    setup(fakeDriver('basic'));
+    writeVerify(store, projectId, { enabled: true, autoFix: true, maxFixes: 1, checks: [{ name: 'Test', command: 'echo "boom: 2 tests failed"; exit 1' }] });
+    const { id } = await manager.createSession(projectId, 'fake');
+    manager.prompt(id, 'change it');
+    await vi.waitFor(() => expect(lastOf(id, 0)?.status).toBe('failed'));
+    expect(lastOf(id, 0)).toMatchObject({ willFix: true, checks: [{ name: 'Test', status: 'failed', output: expect.stringContaining('2 tests failed') }] });
+    // The failure went to the agent as a message of SomeCode's own, and it worked again: one round, then it stops.
+    await vi.waitFor(() => expect(lastOf(id, 1)?.status).toBe('failed'));
+    expect(lastOf(id, 1)?.willFix).toBe(false);
+    const users = store.eventsSince(id, 0).flatMap((e) => (e.event.type === 'user_message' ? [e.event.text] : []));
+    expect(users).toHaveLength(2);
+    expect(users[1]).toMatch(/^\[SomeCode check\].*fix round 1 of 1/s);
+    await new Promise((r) => setTimeout(r, 300));
+    expect(verifications(id).filter((v) => v.round === 2)).toEqual([]);
+  });
+
+  it('passes quietly, and does nothing without checks, when switched off, or when nothing was changed', async () => {
+    setup(fakeDriver('basic'), fakeDriver('usage', 'echo'));
+    const { id } = await manager.createSession(projectId, 'fake');
+    manager.prompt(id, 'no checks configured');
+    await waitForStatus(id, 'ready', 2);
+    await new Promise((r) => setTimeout(r, 200));
+    expect(verifications(id)).toEqual([]);
+
+    writeVerify(store, projectId, { enabled: false, autoFix: true, maxFixes: 2, checks: [{ name: 'Test', command: 'exit 1' }] });
+    manager.prompt(id, 'switched off');
+    await waitForStatus(id, 'ready', 3);
+    await new Promise((r) => setTimeout(r, 200));
+    expect(verifications(id)).toEqual([]);
+
+    writeVerify(store, projectId, { enabled: true, autoFix: true, maxFixes: 2, checks: [{ name: 'Lint', command: 'true' }] });
+    manager.prompt(id, 'now it passes');
+    await vi.waitFor(() => expect(lastOf(id, 0)?.status).toBe('passed'));
+    expect(lastOf(id, 0)?.willFix).toBe(false);
+    // A turn that changed nothing is not checked.
+    const quiet = await manager.createSession(projectId, 'echo');
+    manager.prompt(quiet.id, 'just talk');
+    await waitForStatus(quiet.id, 'ready', 2);
+    await new Promise((r) => setTimeout(r, 200));
+    expect(verifications(quiet.id)).toEqual([]);
+    // "Run checks" works on demand, and refuses a project without any.
+    manager.verifyNow(id);
+    await vi.waitFor(() => expect(verifications(id).filter((v) => v.status === 'passed').length).toBeGreaterThanOrEqual(2));
+    writeVerify(store, projectId, { enabled: true, autoFix: true, maxFixes: 2, checks: [] });
+    expect(() => manager.verifyNow(id)).toThrow(/no checks/);
+  });
+});
+
+describe('checks proposed by an agent', () => {
+  const asked = (id: string) => store.eventsSince(id, 0).flatMap((e) => (e.event.type === 'permission_request' && e.event.detail?.includes('project') ? [e.event] : []));
+
+  it('waits for the user, saves the checks only when approved (added or replacing) and never runs them on its own', async () => {
+    setup(fakeDriver('usage'));
+    writeVerify(store, projectId, { enabled: false, autoFix: false, maxFixes: 1, checks: [{ name: 'Old', command: 'echo old' }] });
+    const { id } = await manager.createSession(projectId, 'fake');
+    const { requestId } = await manager.proposeChecks(id, { checks: [{ name: 'Test', command: 'npm test' }, { name: 'Old again', command: 'echo old' }], mode: 'add', reason: 'The project uses vitest.' });
+    expect(asked(id)[0]).toMatchObject({ requestId, options: [{ id: 'approve' }, { id: 'refuse' }], detail: expect.stringContaining('`npm test`') });
+    expect(asked(id)[0]!.detail).toContain('The project uses vitest.');
+    expect(await manager.checksProposalState(requestId, 0)).toEqual({ state: 'pending' });
+    expect(readVerifyFor()).toMatchObject({ checks: [{ name: 'Old' }] });
+    manager.respondPermission(id, requestId, 'approve');
+    expect(await manager.checksProposalState(requestId, 500)).toEqual({ state: 'approved' });
+    // Added without a duplicate, and the checks are switched on; the user's other settings stay.
+    expect(readVerifyFor()).toMatchObject({ enabled: true, autoFix: false, maxFixes: 1, checks: [{ command: 'echo old' }, { command: 'npm test' }] });
+    expect(verificationEvents(id)).toEqual([]);
+
+    const second = await manager.proposeChecks(id, { checks: [{ name: 'Lint', command: 'npm run lint' }], mode: 'replace' });
+    manager.respondPermission(id, second.requestId, 'approve');
+    expect(await manager.checksProposalState(second.requestId, 500)).toEqual({ state: 'approved' });
+    expect(readVerifyFor().checks).toEqual([{ name: 'Lint', command: 'npm run lint' }]);
+
+    const third = await manager.proposeChecks(id, { checks: [{ name: 'Bad', command: 'rm -rf /' }], mode: 'replace' });
+    manager.respondPermission(id, third.requestId, 'refuse');
+    expect(await manager.checksProposalState(third.requestId, 500)).toEqual({ state: 'refused' });
+    expect(readVerifyFor().checks).toEqual([{ name: 'Lint', command: 'npm run lint' }]);
+  });
+
+  it('does not ask when the chat has "Approve for me" or "Full access": the checks are saved at once and the card shows it was answered', async () => {
+    setup(fakeDriver('usage'));
+    const { id } = await manager.createSession(projectId, 'fake');
+    await manager.setConfig(id, 'approval', 'full');
+    const { requestId } = await manager.proposeChecks(id, { checks: [{ name: 'Test', command: 'npm test' }], mode: 'add' });
+    expect(await manager.checksProposalState(requestId, 500)).toEqual({ state: 'approved' });
+    expect(readVerifyFor().checks).toEqual([{ name: 'Test', command: 'npm test' }]);
+    const events = store.eventsSince(id, 0).map((e) => e.event);
+    expect(events.some((e) => e.type === 'permission_request' && e.requestId === requestId)).toBe(true);
+    expect(events.some((e) => e.type === 'permission_resolved' && e.requestId === requestId && e.outcome === 'selected')).toBe(true);
+
+    await manager.setConfig(id, 'approval', 'auto');
+    const second = await manager.proposeChecks(id, { checks: [{ name: 'Lint', command: 'npm run lint' }], mode: 'add' });
+    expect(await manager.checksProposalState(second.requestId, 500)).toEqual({ state: 'approved' });
+    expect(readVerifyFor().checks.map((c) => c.name)).toEqual(['Test', 'Lint']);
+
+    await manager.setConfig(id, 'approval', 'ask');
+    const third = await manager.proposeChecks(id, { checks: [{ name: 'Types', command: 'tsc' }], mode: 'add' });
+    expect(await manager.checksProposalState(third.requestId, 0)).toEqual({ state: 'pending' });
+  });
+
+  it('remembers that the project was asked, whatever the answer, and a malformed proposal does not count', async () => {
+    setup(fakeDriver('usage'));
+    const { id } = await manager.createSession(projectId, 'fake');
+    await rejection(manager.proposeChecks(id, { checks: [{ name: '', command: 'x' }], mode: 'add' }));
+    expect(store.getSetting(`verify-asked:${projectId}`)).toBeNull();
+    const { requestId } = await manager.proposeChecks(id, { checks: [{ name: 'Test', command: 'npm test' }], mode: 'add' });
+    expect(store.getSetting(`verify-asked:${projectId}`)).toBe('1');
+    manager.respondPermission(id, requestId, 'refuse');
+    await manager.checksProposalState(requestId, 500);
+    expect(store.getSetting(`verify-asked:${projectId}`)).toBe('1');
+  });
+
+  it('refuses a malformed proposal and treats a cancelled turn as a refusal', async () => {
+    setup(fakeDriver('usage'));
+    const { id } = await manager.createSession(projectId, 'fake');
+    expect((await rejection(manager.proposeChecks(id, { checks: [{ name: '', command: 'x' }], mode: 'add' }))).code).toBe('bad_request');
+    expect((await rejection(manager.proposeChecks(id, { checks: Array.from({ length: 9 }, (_, i) => ({ name: `c${i}`, command: 'true' })), mode: 'add' }))).code).toBe('bad_request');
+    expect((await rejection(manager.proposeChecks('nope', { checks: [{ name: 'a', command: 'b' }], mode: 'add' }))).code).toBe('not_found');
+    const { requestId } = await manager.proposeChecks(id, { checks: [{ name: 'Test', command: 'npm test' }], mode: 'add' });
+    manager.respondPermission(id, requestId, null);
+    expect(await manager.checksProposalState(requestId, 500)).toEqual({ state: 'refused' });
+    expect(readVerifyFor().checks).toEqual([]);
+  });
+
+  it('starts a chat that asks an agent to work the checks out', async () => {
+    setup(fakeDriver('usage'));
+    const row = await manager.askAgentForChecks(projectId, 'fake', 'Work out the checks for this project and propose them.');
+    expect(store.getSession(row.id)?.title).toBe('🛡 Checks');
+    await vi.waitFor(() => expect(types(row.id)).toContain('user_message'));
+  });
+});
+
+const readVerifyFor = () => readVerify(store, projectId);
+const verificationEvents = (id: string) => store.eventsSince(id, 0).filter((e) => e.event.type === 'verification');

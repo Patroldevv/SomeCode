@@ -12,6 +12,7 @@ import {
   type StoredEvent,
 } from '@somecode/protocol';
 import { SCHEMA_SQL } from './schema.sql.ts';
+import type { ScheduleSpec } from './schedule.ts';
 
 export const MAX_EVENT_BYTES = 1_048_576;
 export const MAX_EVENT_PAGE = 200;
@@ -36,6 +37,32 @@ export type SessionRow = {
   createdAt: number;
 };
 
+export type Memory = { id: string; projectId: string; text: string; createdAt: number };
+export type ScheduledTask = {
+  id: string;
+  projectId: string;
+  agentId: string;
+  title: string;
+  prompt: string;
+  spec: ScheduleSpec;
+  enabled: boolean;
+  nextRun: number | null;
+  lastRun: number | null;
+  lastSessionId: string | null;
+  runs: number;
+  createdAt: number;
+};
+export type HistoryHit = {
+  sessionId: string;
+  seq: number;
+  kind: 'user' | 'agent';
+  snippet: string;
+  sessionTitle: string | null;
+  projectName: string;
+  agentId: string;
+  createdAt: number;
+};
+
 export interface Store {
   addProject(p: { name: string; path: string }): Project;
   listProjects(): Project[];
@@ -54,10 +81,30 @@ export interface Store {
   renameProject(id: string, name: string): boolean;
   /** Removes a session with its events, projection and saved settings. */
   deleteSession(id: string): boolean;
+  /** Rewinds a session's events to before the specified sequence number. */
+  rewindSession(sessionId: string, beforeSeq: number): void;
   /** Removes a project and all of its sessions. */
   deleteProject(id: string): boolean;
   getSetting(key: string): string | null;
   setSetting(key: string, value: string): void;
+  /** Project memory: notes every agent working in the project is told about. */
+  addMemory(projectId: string, text: string): Memory;
+  listMemories(projectId: string): Memory[];
+  deleteMemory(id: string): boolean;
+  /** Scheduled tasks. */
+  addTask(t: { projectId: string; agentId: string; title: string; prompt: string; spec: ScheduleSpec; nextRun: number }): ScheduledTask;
+  listTasks(): ScheduledTask[];
+  getTask(id: string): ScheduledTask | undefined;
+  updateTask(id: string, patch: { enabled?: boolean; title?: string; nextRun?: number | null }): boolean;
+  /** A task ran: remember when and in which chat, and when it runs next (null ends it). */
+  recordTaskRun(id: string, run: { at: number; sessionId: string | null; nextRun: number | null }): void;
+  deleteTask(id: string): boolean;
+  /** Enabled tasks whose time has come. */
+  dueTasks(now: number): ScheduledTask[];
+  /** Messages of past chats (the user's and the agent's) that contain every word of the query, newest first. */
+  searchHistory(query: string, opts?: { projectId?: string; limit?: number }): HistoryHit[];
+  /** A chat as plain text (user and agent messages and tool titles), from `afterSeq`, at most `maxChars`. */
+  transcript(sessionId: string, opts?: { afterSeq?: number; maxChars?: number }): { text: string; lastSeq: number; truncated: boolean };
   close(): void;
 }
 
@@ -240,8 +287,24 @@ export function openStore(dbPath: string): Store {
     db.prepare('DELETE FROM session_checkpoints WHERE session_id = ?').run(id);
     db.prepare('DELETE FROM events WHERE session_id = ?').run(id);
     db.prepare('DELETE FROM settings WHERE key = ?').run(`approval:${id}`);
+    db.prepare('DELETE FROM settings WHERE key = ?').run(`research:${id}`);
     return Number(db.prepare('DELETE FROM sessions WHERE id = ?').run(id).changes) > 0;
   };
+  const taskOf = (row: Record<string, unknown>): ScheduledTask => ({
+    id: String(row['id']),
+    projectId: String(row['project_id']),
+    agentId: String(row['agent_id']),
+    title: String(row['title']),
+    prompt: String(row['prompt']),
+    spec: JSON.parse(String(row['spec'])) as ScheduleSpec,
+    enabled: Number(row['enabled']) === 1,
+    nextRun: row['next_run'] === null ? null : Number(row['next_run']),
+    lastRun: row['last_run'] === null ? null : Number(row['last_run']),
+    lastSessionId: row['last_session_id'] === null ? null : String(row['last_session_id']),
+    runs: Number(row['runs']),
+    createdAt: Number(row['created_at']),
+  });
+  const likeOf = (term: string) => `%${term.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
   const inTransaction = <T,>(work: () => T): T => {
     db.exec('BEGIN');
     try {
@@ -387,9 +450,22 @@ export function openStore(dbPath: string): Store {
     deleteSession(id) {
       return inTransaction(() => removeSession(id));
     },
+    rewindSession(sessionId, beforeSeq) {
+      if (!Number.isSafeInteger(beforeSeq) || beforeSeq < 1) {
+        throw new SomeCodeError('bad_request', 'invalid sequence number');
+      }
+      inTransaction(() => {
+        db.prepare('DELETE FROM events WHERE session_id = ? AND seq >= ?').run(sessionId, beforeSeq);
+        db.prepare('DELETE FROM session_items WHERE session_id = ?').run(sessionId);
+        db.prepare('DELETE FROM session_checkpoints WHERE session_id = ?').run(sessionId);
+      });
+      projectHistory(sessionId);
+    },
     deleteProject(id) {
       return inTransaction(() => {
         for (const row of sessionIdsOf.all(id) as { id: string }[]) removeSession(row.id);
+        db.prepare('DELETE FROM memories WHERE project_id = ?').run(id);
+        db.prepare('DELETE FROM scheduled_tasks WHERE project_id = ?').run(id);
         return Number(db.prepare('DELETE FROM projects WHERE id = ?').run(id).changes) > 0;
       });
     },
@@ -429,6 +505,97 @@ export function openStore(dbPath: string): Store {
     lastSeq(sessionId) {
       const r = selectLastSeq.get(sessionId) as { seq: number | null };
       return r.seq ?? 0;
+    },
+    addMemory(projectId, text) {
+      const memory = { id: randomUUID(), projectId, text, createdAt: Date.now() };
+      db.prepare('INSERT INTO memories(id, project_id, text, created_at) VALUES (?, ?, ?, ?)').run(memory.id, projectId, text, memory.createdAt);
+      return memory;
+    },
+    listMemories(projectId) {
+      return (db.prepare('SELECT id, project_id, text, created_at FROM memories WHERE project_id = ? ORDER BY created_at, rowid').all(projectId) as { id: string; project_id: string; text: string; created_at: number }[]).map((r) => ({
+        id: r.id,
+        projectId: r.project_id,
+        text: r.text,
+        createdAt: r.created_at,
+      }));
+    },
+    deleteMemory(id) {
+      return Number(db.prepare('DELETE FROM memories WHERE id = ?').run(id).changes) > 0;
+    },
+    addTask(t) {
+      const id = randomUUID();
+      const createdAt = Date.now();
+      db.prepare('INSERT INTO scheduled_tasks(id, project_id, agent_id, title, prompt, spec, enabled, next_run, created_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)').run(id, t.projectId, t.agentId, t.title, t.prompt, JSON.stringify(t.spec), t.nextRun, createdAt);
+      return taskOf(db.prepare('SELECT * FROM scheduled_tasks WHERE id = ?').get(id) as Record<string, unknown>);
+    },
+    listTasks() {
+      return (db.prepare('SELECT * FROM scheduled_tasks ORDER BY created_at, rowid').all() as Record<string, unknown>[]).map(taskOf);
+    },
+    getTask(id) {
+      const row = db.prepare('SELECT * FROM scheduled_tasks WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+      return row ? taskOf(row) : undefined;
+    },
+    updateTask(id, patch) {
+      const sets: string[] = [];
+      const values: (string | number | null)[] = [];
+      if (patch.enabled !== undefined) (sets.push('enabled = ?'), values.push(patch.enabled ? 1 : 0));
+      if (patch.title !== undefined) (sets.push('title = ?'), values.push(patch.title));
+      if (patch.nextRun !== undefined) (sets.push('next_run = ?'), values.push(patch.nextRun));
+      if (sets.length === 0) return this.getTask(id) !== undefined;
+      return Number(db.prepare(`UPDATE scheduled_tasks SET ${sets.join(', ')} WHERE id = ?`).run(...values, id).changes) > 0;
+    },
+    recordTaskRun(id, run) {
+      db.prepare('UPDATE scheduled_tasks SET last_run = ?, last_session_id = ?, runs = runs + 1, next_run = ?, enabled = CASE WHEN ? IS NULL THEN 0 ELSE enabled END WHERE id = ?').run(run.at, run.sessionId, run.nextRun, run.nextRun, id);
+    },
+    deleteTask(id) {
+      return Number(db.prepare('DELETE FROM scheduled_tasks WHERE id = ?').run(id).changes) > 0;
+    },
+    dueTasks(now) {
+      return (db.prepare('SELECT * FROM scheduled_tasks WHERE enabled = 1 AND next_run IS NOT NULL AND next_run <= ? ORDER BY next_run').all(now) as Record<string, unknown>[]).map(taskOf);
+    },
+    searchHistory(query, opts = {}) {
+      const terms = [...new Set(query.toLowerCase().split(/\s+/).filter((w) => w.length >= 2))].slice(0, 6);
+      if (terms.length === 0) return [];
+      const limit = Math.min(Math.max(opts.limit ?? 10, 1), 30);
+      const sessions = (opts.projectId
+        ? db.prepare('SELECT s.id, s.title, s.agent_id, s.created_at, p.name AS project FROM sessions s JOIN projects p ON p.id = s.project_id WHERE s.project_id = ? ORDER BY s.created_at DESC, s.rowid DESC').all(opts.projectId)
+        : db.prepare('SELECT s.id, s.title, s.agent_id, s.created_at, p.name AS project FROM sessions s JOIN projects p ON p.id = s.project_id ORDER BY s.created_at DESC, s.rowid DESC').all()) as { id: string; title: string | null; agent_id: string; created_at: number; project: string }[];
+      const where = terms.map(() => "lower(json_extract(json, '$.text')) LIKE ? ESCAPE '\\'").join(' AND ');
+      const hits: HistoryHit[] = [];
+      for (const s of sessions) {
+        if (hits.length >= limit) break;
+        projectHistory(s.id);
+        const rows = db.prepare(`SELECT seq, json FROM session_items WHERE session_id = ? AND json_extract(json, '$.kind') IN ('user', 'agent') AND ${where} ORDER BY seq DESC LIMIT ?`).all(s.id, ...terms.map(likeOf), limit - hits.length) as { seq: number; json: string }[];
+        for (const r of rows) {
+          const item = JSON.parse(r.json) as { kind: 'user' | 'agent'; text: string };
+          const at = Math.max(0, item.text.toLowerCase().indexOf(terms[0]!) - 120);
+          const snippet = `${at > 0 ? '…' : ''}${item.text.slice(at, at + 320).replace(/\s+/g, ' ').trim()}${item.text.length > at + 320 ? '…' : ''}`;
+          hits.push({ sessionId: s.id, seq: r.seq, kind: item.kind, snippet, sessionTitle: s.title, projectName: s.project, agentId: s.agent_id, createdAt: s.created_at });
+        }
+      }
+      return hits;
+    },
+    transcript(sessionId, opts = {}) {
+      projectHistory(sessionId);
+      const maxChars = Math.min(Math.max(opts.maxChars ?? 12_000, 500), 60_000);
+      const rows = db.prepare('SELECT seq, json FROM session_items WHERE session_id = ? AND seq > ? ORDER BY seq').all(sessionId, opts.afterSeq ?? 0) as { seq: number; json: string }[];
+      const lines: string[] = [];
+      let size = 0;
+      let lastSeq = opts.afterSeq ?? 0;
+      let truncated = false;
+      for (const r of rows) {
+        const item = JSON.parse(r.json) as { kind: string; text?: string; title?: string };
+        const line = item.kind === 'user' ? `User: ${item.text}` : item.kind === 'agent' ? `Agent: ${item.text}` : item.kind === 'tool' ? `[tool] ${item.title}` : null;
+        if (line === null) continue;
+        if (size + line.length > maxChars && lines.length > 0) {
+          truncated = true;
+          break;
+        }
+        lines.push(line.length > maxChars ? `${line.slice(0, maxChars)}…` : line);
+        size += line.length + 1;
+        lastSeq = r.seq;
+      }
+      return { text: lines.join('\n'), lastSeq, truncated };
     },
     close() {
       db.close();

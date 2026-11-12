@@ -1,4 +1,4 @@
-import { useMemo, type ReactNode } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
 import { t } from '../../i18n/index.ts';
 import { groupDigits, prettyValue, truncateOutput } from '../../lib/format.ts';
 import { toolFiles } from '../../lib/toolFiles.ts';
@@ -81,6 +81,16 @@ export function extractSearchResults(item: ToolItem): SearchResult[] {
   return results;
 }
 
+/** A picture a tool returned (a browser screenshot): shown at a modest size, the whole picture on a press. */
+function ToolImage({ data, mimeType }: { data: string; mimeType: string }) {
+  const [big, setBig] = useState(false);
+  return (
+    <button type="button" onClick={() => setBig((v) => !v)} className="block w-fit max-w-full cursor-zoom-in" title={t('tool.openImage')} aria-expanded={big}>
+      <img src={`data:${mimeType};base64,${data}`} alt={t('tool.screenshot')} className={`max-w-full rounded-md border border-border object-contain ${big ? 'cursor-zoom-out' : 'max-h-96'}`} />
+    </button>
+  );
+}
+
 function Section({ label, children }: { label: string; children: ReactNode }) {
   return (
     <section className="min-w-0 space-y-1.5">
@@ -117,6 +127,10 @@ function Output({ item }: { item: ToolItem }) {
             return <Mono key={i} text={block.text} />;
           case 'diff':
             return <DiffView key={i} path={block.path} oldText={block.oldText} newText={block.newText} />;
+          case 'image':
+            return (
+              <ToolImage key={i} data={block.data} mimeType={block.mimeType} />
+            );
           case 'terminal':
             return (
               <p key={i} className="flex min-w-0 items-center gap-1.5 text-xs text-text-muted">

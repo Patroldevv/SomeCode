@@ -245,4 +245,17 @@ describe('ConfigChips', () => {
       expect(chip).toHaveAttribute('data-level', 'full');
     });
   });
+
+  it('names SomeCode\'s deep research entry of the mode menu in the user\'s language, and shows it as the mode while it is on', async () => {
+    const research = opt('mode', 'Mode', 'mode', 'default', ['default', 'plan', 'deep_research']);
+    const { user, onChange, rerender } = setup({ options: [research, ...NO_EFFORT.filter((o) => o.id !== 'mode')] });
+    await user.click(screen.getByRole('button', { name: 'Mode: default' }));
+    const items = within(screen.getByRole('menu')).getAllByRole('menuitemradio');
+    expect(items.map((i) => i.textContent)).toEqual(['default', 'plan', expect.stringContaining('Deep research')]);
+    expect(within(screen.getByRole('menu')).getByText('Researches the question across many sources and writes a cited report.')).toBeInTheDocument();
+    await user.click(items[2]!);
+    expect(onChange).toHaveBeenCalledWith('mode', 'deep_research');
+    rerender(<ConfigChips options={[{ ...research, currentValue: 'deep_research' }]} disabled={false} pendingId={null} onChange={onChange} />);
+    expect(screen.getByRole('button', { name: 'Mode: Deep research' })).toBeInTheDocument();
+  });
 });

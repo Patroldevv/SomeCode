@@ -201,4 +201,44 @@ describe('workspace terminal routes', () => {
     const inheritedName = await app.request(`${prefix}/terminals`, { method: 'POST', body: JSON.stringify({ agentId: '__proto__' }) });
     expect(inheritedName.status).toBe(400);
   });
+
+  it('reverts modified and created files via POST /api/projects/:id/revert', async () => {
+    const projectDir = join(root, 'project');
+    const fileA = join(projectDir, 'src', 'index.ts');
+    await mkdir(join(projectDir, 'src'));
+    await writeFile(fileA, 'function test() { return "modified"; }');
+
+    const fileB = join(projectDir, 'src', 'newFile.ts');
+    await writeFile(fileB, 'new file content');
+
+    // 1. Revert index.ts to original content and newFile.ts to null (deleted)
+    const res = await app.request(`${prefix}/revert`, {
+      method: 'POST',
+      body: JSON.stringify({
+        files: [
+          { path: 'src/index.ts', content: 'function test() { return "original"; }' },
+          { path: 'src/newFile.ts', content: null },
+        ],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.ok).toBe(true);
+    expect(body.reverted).toEqual(['src/index.ts', 'src/newFile.ts']);
+
+    // Check disk content
+    expect(await readFile(fileA, 'utf8')).toBe('function test() { return "original"; }');
+    await expect(readFile(fileB, 'utf8')).rejects.toThrow();
+  });
+
+  it('strictly forbids path traversal during revert', async () => {
+    const res = await app.request(`${prefix}/revert`, {
+      method: 'POST',
+      body: JSON.stringify({
+        files: [{ path: '../outside.txt', content: 'evil' }],
+      }),
+    });
+    expect(res.status).toBe(403);
+  });
 });

@@ -10,10 +10,12 @@ import type { EditedFile } from "../lib/edits.ts";
 import type { Subagent } from "../lib/subagents.ts";
 import { ChangesList } from "./ChangesList.tsx";
 import { SubagentsView } from "./SubagentsView.tsx";
+import { SourcesView } from "./SourcesView.tsx";
+import { hasResearch, type ResearchWork } from "../lib/researchSources.ts";
 import { CodeBlock } from "./CodeBlock.tsx";
 import { SymbolIcon } from "./SymbolIcon.tsx";
 import { TerminalPane } from "./TerminalPane.tsx";
-type Tab = "files" | "changes" | "agents" | "preview" | "terminal";
+type Tab = "files" | "changes" | "agents" | "sources" | "preview" | "terminal";
 export function WorkspacePanel({
   api,
   project,
@@ -22,6 +24,7 @@ export function WorkspacePanel({
   loginAgent,
   edits = [],
   subagents = [],
+  research,
   tabRequest,
 }: {
   api: WorkspaceApi;
@@ -32,6 +35,8 @@ export function WorkspacePanel({
   /** Files the agent changed in the open session. */
   edits?: readonly EditedFile[];
   subagents?: readonly Subagent[];
+  /** What a deep research has found (the Sources tab shows when there is something). */
+  research?: ResearchWork;
   /** Brings a tab to the front (a new `n` each time, so asking twice works). */
   tabRequest?: { tab: Tab; n: number };
 }) {
@@ -90,6 +95,27 @@ export function WorkspacePanel({
       if (mine === request.current) setLoading(false);
     }
   };
+
+  const handleRevertFile = async (file: EditedFile) => {
+    try {
+      const content = file.changes[0]?.oldText ?? null;
+      await api.revert(project.id, { files: [{ path: file.path, content }] });
+      setRevision((r) => r + 1);
+    } catch {
+      setError(errorText("internal"));
+    }
+  };
+
+  const handleRevertAll = async () => {
+    try {
+      const files = edits.map((f) => ({ path: f.path, content: f.changes[0]?.oldText ?? null }));
+      await api.revert(project.id, { files });
+      setRevision((r) => r + 1);
+    } catch {
+      setError(errorText("internal"));
+    }
+  };
+
   return (
     <aside
       className="workspace-panel panel-in"
@@ -118,7 +144,7 @@ export function WorkspacePanel({
         </button>
       </div>
       <div role="tablist" className="panel-tabs">
-        {(["files", "changes", ...(subagents.length > 0 ? (["agents"] as const) : []), "preview", "terminal"] as const).map((name) => (
+        {(["files", "changes", ...(subagents.length > 0 ? (["agents"] as const) : []), ...(research && hasResearch(research) ? (["sources"] as const) : []), "preview", "terminal"] as const).map((name) => (
           <button
             role="tab"
             aria-selected={tab === name}
@@ -193,7 +219,7 @@ export function WorkspacePanel({
         hidden={tab !== "changes"}
         className="min-h-0 flex-1 overflow-auto"
       >
-        <ChangesList files={edits} />
+        <ChangesList files={edits} onRevertFile={handleRevertFile} onRevertAll={handleRevertAll} />
       </div>
       <div
         role="tabpanel"
@@ -203,6 +229,15 @@ export function WorkspacePanel({
         className="min-h-0 flex-1 overflow-auto"
       >
         <SubagentsView agents={subagents} />
+      </div>
+      <div
+        role="tabpanel"
+        id="workspace-sources"
+        aria-labelledby="tab-sources"
+        hidden={tab !== "sources"}
+        className="min-h-0 flex-1 overflow-auto"
+      >
+        {research && <SourcesView work={research} />}
       </div>
       <div
         role="tabpanel"

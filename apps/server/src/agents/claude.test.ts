@@ -21,6 +21,11 @@ describe('claude driver', () => {
     expect(existsSync(launch.args[0]!)).toBe(true);
   });
 
+  it('asks for thinking summaries, since newer models send no thinking text otherwise, unless the user chose', () => {
+    expect(createClaudeDriver({}).launch().env).toEqual({ CLAUDE_CODE_THINKING_DISPLAY: 'summarized' });
+    expect(createClaudeDriver({ CLAUDE_CODE_THINKING_DISPLAY: 'omitted' }).launch().env).toEqual({ CLAUDE_CODE_THINKING_DISPLAY: 'omitted' });
+  });
+
   it('reports installed, version and signed_in from `claude auth status --json`', async () => {
     const PATH = binDirWith('claude', claudeScript('{"loggedIn":true,"email":"someone@example.com","orgName":"Acme"}'));
     expect(await createClaudeDriver({ PATH }).detect()).toEqual({

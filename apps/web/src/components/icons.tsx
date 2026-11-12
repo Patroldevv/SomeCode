@@ -1,4 +1,5 @@
 import type { ReactNode, SVGProps } from 'react';
+import { ArrowLeftRight, ArrowRight, Check, ChevronRight, CircleAlert, FileText, Globe, Lightbulb, PanelLeft, Pencil, Search, ShieldCheck, SquareTerminal, Trash2, Wrench, X, type LucideIcon } from 'lucide-react';
 
 // Small inline line icons (16 × 16, `currentColor`), decorative by default: callers give the accessible name.
 
@@ -23,100 +24,42 @@ function Icon({ children, className = 'size-4', ...rest }: IconProps & { childre
   );
 }
 
-export const FileIcon = (p: IconProps) => (
-  <Icon {...p}>
-    <path d="M4 1.75h5L12.25 5v9.25H4z" />
-    <path d="M9 1.75V5h3.25M6 8.5h4M6 11h4" />
-  </Icon>
-);
+/** The line icons come from the Lucide set (one consistent drawing style); the size and colour are the caller's. */
+function lucide(Component: LucideIcon, name?: string) {
+  return function GlyphIcon({ className = 'size-4', ...rest }: IconProps) {
+    return <Component aria-hidden="true" focusable="false" strokeWidth={1.75} className={className} {...(name ? { 'data-icon': name } : {})} {...(rest as object)} />;
+  };
+}
 
-export const PencilIcon = (p: IconProps) => (
-  <Icon {...p}>
-    <path d="M10.5 2.5l3 3-8 8H2.5v-3z" />
-    <path d="M9 4l3 3" />
-  </Icon>
-);
+export const FileIcon = lucide(FileText, 'file');
 
-export const TrashIcon = (p: IconProps) => (
-  <Icon {...p}>
-    <path d="M2.5 4h11M6 4V2.5h4V4M4 4l.75 9.5h6.5L12 4" />
-  </Icon>
-);
+export const PencilIcon = lucide(Pencil, 'edit');
 
-export const MoveIcon = (p: IconProps) => (
-  <Icon {...p}>
-    <path d="M2 8h11M9.5 4.5L13 8l-3.5 3.5" />
-  </Icon>
-);
+export const TrashIcon = lucide(Trash2, 'trash');
 
-export const SearchIcon = (p: IconProps) => (
-  <Icon {...p}>
-    <circle cx="7" cy="7" r="4.25" />
-    <path d="M10.25 10.25L14 14" />
-  </Icon>
-);
+export const MoveIcon = lucide(ArrowRight);
 
-export const TerminalIcon = (p: IconProps) => (
-  <Icon {...p}>
-    <path d="M2.5 4l3.5 4-3.5 4M8 12.5h5.5" />
-  </Icon>
-);
+export const SearchIcon = lucide(Search, 'search');
 
-export const BulbIcon = (p: IconProps) => (
-  <Icon {...p}>
-    <path d="M6 12h4M6.5 14.25h3M5.75 10A4.25 4.25 0 1 1 10.25 10c-.5.4-.75.9-.75 1.5v.5h-3v-.5c0-.6-.25-1.1-.75-1.5z" />
-  </Icon>
-);
+export const TerminalIcon = lucide(SquareTerminal, 'terminal');
 
-export const GlobeIcon = (p: IconProps) => (
-  <Icon {...p}>
-    <circle cx="8" cy="8" r="6.25" />
-    <path d="M1.75 8h12.5M8 1.75c1.75 1.75 2.5 3.9 2.5 6.25S9.75 12.5 8 14.25C6.25 12.5 5.5 10.35 5.5 8S6.25 3.5 8 1.75z" />
-  </Icon>
-);
+export const BulbIcon = lucide(Lightbulb, 'idea');
 
-export const SwitchIcon = (p: IconProps) => (
-  <Icon {...p}>
-    <path d="M2.5 5.5h10L10 3M13.5 10.5h-10L6 13" />
-  </Icon>
-);
+export const GlobeIcon = lucide(Globe, 'globe');
 
-export const WrenchIcon = (p: IconProps) => (
-  <Icon {...p}>
-    <path d="M10 2a3.5 3.5 0 0 0-3.2 4.9L2.25 11.45a1.6 1.6 0 0 0 2.3 2.3L9.1 9.2A3.5 3.5 0 0 0 14 6l-2.1 2.1-2.4-.6-.6-2.4L11 3z" />
-  </Icon>
-);
+export const SwitchIcon = lucide(ArrowLeftRight);
 
-export const CheckIcon = (p: IconProps) => (
-  <Icon {...p}>
-    <path d="M3 8.5l3.25 3.25L13 4.75" />
-  </Icon>
-);
+export const WrenchIcon = lucide(Wrench, 'tool');
 
-export const CrossIcon = (p: IconProps) => (
-  <Icon {...p}>
-    <path d="M4 4l8 8M12 4l-8 8" />
-  </Icon>
-);
+export const CheckIcon = lucide(Check);
 
-export const ChevronIcon = (p: IconProps) => (
-  <Icon {...p}>
-    <path d="M6 3.5L10.5 8 6 12.5" />
-  </Icon>
-);
+export const CrossIcon = lucide(X, 'close');
 
-export const ShieldIcon = (p: IconProps) => (
-  <Icon {...p}>
-    <path d="M8 1.75l5.25 2v4c0 3.25-2.25 5.5-5.25 6.5-3-1-5.25-3.25-5.25-6.5v-4z" />
-  </Icon>
-);
+export const ChevronIcon = lucide(ChevronRight);
 
-export const AlertIcon = (p: IconProps) => (
-  <Icon {...p}>
-    <circle cx="8" cy="8" r="6.25" />
-    <path d="M8 4.75v3.75M8 11.1v.15" />
-  </Icon>
-);
+export const ShieldIcon = lucide(ShieldCheck, 'shield');
+
+export const AlertIcon = lucide(CircleAlert);
 
 /** Filled dot (neutral status, bullets). */
 export const DotIcon = ({ className = 'size-4', ...rest }: IconProps) => (
@@ -156,16 +99,7 @@ export function Glyph({ label, title, className = '', children }: { label: strin
 export function Spinner({ label, className = 'size-4' }: { label: string; className?: string }) {
   return (
     <span role="status" aria-label={label} title={label} className={`inline-flex shrink-0 ${className}`}>
-      <svg
-        viewBox="0 0 16 16"
-        fill="none"
-        aria-hidden="true"
-        focusable="false"
-        className="size-full motion-safe:animate-spin motion-reduce:hidden"
-      >
-        <circle cx="8" cy="8" r="5.5" stroke="currentColor" strokeOpacity="0.25" strokeWidth="1.75" />
-        <path d="M8 2.5a5.5 5.5 0 0 1 5.5 5.5" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" />
-      </svg>
+      <span aria-hidden="true" className="spin-arc size-full motion-reduce:hidden" />
       <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false" className="hidden size-full motion-reduce:block">
         <circle cx="3.5" cy="8" r="1.25" fill="currentColor" />
         <circle cx="8" cy="8" r="1.25" fill="currentColor" />
@@ -176,9 +110,4 @@ export function Spinner({ label, className = 'size-4' }: { label: string; classN
 }
 
 /** A panel with a left column (sidebar toggle). */
-export const SidebarIcon = (p: IconProps) => (
-  <Icon {...p}>
-    <rect x="2" y="2.75" width="12" height="10.5" rx="1.5" />
-    <path d="M6 2.75v10.5" />
-  </Icon>
-);
+export const SidebarIcon = lucide(PanelLeft, 'panel');

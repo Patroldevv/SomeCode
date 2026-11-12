@@ -4,6 +4,7 @@ import type { Subagent } from '../lib/subagents.ts';
 import { ChevronIcon } from './icons.tsx';
 import { SymbolIcon } from './SymbolIcon.tsx';
 import { SubagentStatus } from './SubagentsList.tsx';
+import type { ResearchWork } from '../lib/researchSources.ts';
 
 const tokens = (n: number): string => (n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${Math.round(n / 1000)}k` : String(n));
 
@@ -19,6 +20,8 @@ export function ChangesCard({
   onOpenFiles,
   onOpenChanges,
   onOpenAgents,
+  research,
+  onOpenSources,
 }: {
   projectName: string;
   files: readonly EditedFile[];
@@ -28,6 +31,9 @@ export function ChangesCard({
   onOpenFiles: () => void;
   onOpenChanges: () => void;
   onOpenAgents: () => void;
+  /** What a deep research has found; its row shows once there are sources. */
+  research?: ResearchWork;
+  onOpenSources?: () => void;
 }) {
   const { added, removed } = totalStats(files);
   const running = subagents.filter((a) => a.status === 'running').length;
@@ -61,6 +67,16 @@ export function ChangesCard({
             <span className="sr-only">
               {plural('edits.title', files.length)}, {t('diff.stats', { added: plural('diff.added', added), removed: plural('diff.removed', removed) })}
             </span>
+          </span>
+        </button>
+      )}
+      {research && research.sources.length > 0 && onOpenSources && (
+        <button type="button" onClick={onOpenSources} className="changes-card-row">
+          <SymbolIcon name="research" className="size-4 text-text-muted" />
+          <span className="min-w-0 flex-1 truncate text-left">{t('changesCard.sources')}</span>
+          <span className="flex shrink-0 items-center gap-1.5 text-xs text-text-muted">
+            {research.busy && <span className="spin-arc size-3 text-accent" aria-hidden="true" />}
+            <span>{research.sources.length}</span>
           </span>
         </button>
       )}

@@ -3,7 +3,12 @@ import { t, errorText } from "../i18n/index.ts";
 import type { WorkspaceApi } from "../lib/workspaceApi.ts";
 import type { Terminal as XTerminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
+import { getClientSettings, useClientSettings } from "../lib/settings.ts";
 import { SymbolIcon } from "./SymbolIcon.tsx";
+
+export const terminalFontSize = (size: number): number => (size >= 10 && size <= 24 ? size : 12);
+export const terminalFontFamily = (family: string): string =>
+  family.trim() ? `"${family.trim().replace(/"/g, "")}", "DejaVu Sans Mono", monospace` : '"DejaVu Sans Mono",monospace';
 export function TerminalPane({
   api,
   projectId,
@@ -21,6 +26,16 @@ export function TerminalPane({
   const [error, setError] = useState<string | null>(null);
   const [exited, setExited] = useState(false);
   const fitRef = useRef<(() => void) | null>(null);
+  const termRef = useRef<XTerminal | null>(null);
+  const { codeFontFamily, codeFontSize } = useClientSettings();
+  // A font chosen in the settings applies to the open terminal at once.
+  useEffect(() => {
+    const term = termRef.current;
+    if (!term) return;
+    term.options.fontFamily = terminalFontFamily(codeFontFamily);
+    term.options.fontSize = terminalFontSize(codeFontSize);
+    requestAnimationFrame(() => fitRef.current?.());
+  }, [codeFontFamily, codeFontSize]);
   useEffect(() => {
     if (visible) requestAnimationFrame(() => fitRef.current?.());
   }, [visible]);
@@ -44,8 +59,8 @@ export function TerminalPane({
         term = new Terminal({
           cursorBlink: true,
           screenReaderMode: true,
-          fontSize: 12,
-          fontFamily: '"DejaVu Sans Mono",monospace',
+          fontSize: terminalFontSize(getClientSettings().codeFontSize),
+          fontFamily: terminalFontFamily(getClientSettings().codeFontFamily),
           scrollback: 2000,
           theme: {
             background: "#111111",
@@ -54,6 +69,7 @@ export function TerminalPane({
             selectionBackground: "#3a3a3a",
           },
         });
+        termRef.current = term;
         const fit = new FitAddon();
         term.loadAddon(fit);
         term.open(host.current!);

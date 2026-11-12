@@ -12,8 +12,8 @@ import { ApiError, type SessionInfo } from "./lib/api.ts";
 import { clearActiveSession } from "./lib/activeSession.ts";
 import { Sidebar } from "./components/Sidebar.tsx";
 import { ChangesCard } from "./components/ChangesCard.tsx";
-import { ProfileMenu } from "./components/ProfileMenu.tsx";
 import { TitleBar, type MenuDef } from "./components/TitleBar.tsx";
+import { LocalImageProvider } from "./components/LocalImage.tsx";
 import { UsageMenu } from "./components/UsageMenu.tsx";
 import { calculateContextStats } from "./components/ContextIndicator.tsx";
 import { useNavHistory } from "./hooks/useNavHistory.ts";
@@ -24,9 +24,11 @@ import { matchesShortcut } from "./lib/shortcuts.ts";
 import { getClientSettings, useClientSettings } from "./lib/settings.ts";
 import type { ServerSettings } from "./lib/api.ts";
 import { editsOfSession } from "./lib/edits.ts";
+import { collectResearch } from "./lib/researchSources.ts";
 import { subagentsOf } from "./lib/subagents.ts";
 import { useCatalog } from "./hooks/useCatalog.ts";
 import { useAlerts } from "./hooks/useAlerts.ts";
+import { setSessionView, TRANSCRIPT_VIEWS, useTranscriptView } from "./lib/transcriptView.ts";
 import { Toasts } from "./components/Toasts.tsx";
 import { primeAudio } from "./lib/sound.ts";
 import { sessionLabel } from "./lib/sessionLabel.ts";
@@ -44,10 +46,26 @@ import {
   useSession,
   type SessionsStore,
 } from "./lib/sessionsStore.ts";
-import { loadToken } from "./lib/token.ts";
+import { exchangeLaunchCode, loadToken, takeLaunchCode } from "./lib/token.ts";
 
 export function App() {
-  const [token] = useState(loadToken);
+  const [token, setToken] = useState(loadToken);
+  // An address with a one-time launch code: trade it for the token before showing anything.
+  const [code] = useState(takeLaunchCode);
+  const [exchanging, setExchanging] = useState(code !== null && token === null);
+  useEffect(() => {
+    if (code === null) return;
+    let alive = true;
+    void exchangeLaunchCode(code).then((fetched) => {
+      if (!alive) return;
+      if (fetched !== null) setToken(fetched);
+      setExchanging(false);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [code]);
+  if (token === null && exchanging) return <main className="h-dvh bg-bg" aria-busy="true" />;
   if (token === null) {
     return (
       <main className="flex h-dvh items-center justify-center bg-bg px-4 font-ui text-text">
@@ -57,6 +75,8 @@ export function App() {
   }
   return <Client token={token} />;
 }
+
+const CONNECTION_DOT: Record<string, string> = { connecting: "bg-warning", open: "bg-success", reconnecting: "bg-warning", closed: "bg-danger" };
 
 /** The server normalises project paths; compare without trailing slashes so `/a/b/` finds `/a/b`. */
 const samePath = (a: string, b: string): boolean =>
@@ -92,7 +112,7 @@ export function Client({
   const [pluginsOpen, setPluginsOpen] = useState(false);
   const [serverSettings, setServerSettings] = useState<ServerSettings | null>(null);
   const clientSettings = useClientSettings();
-  const [tabRequest, setTabRequest] = useState<{ tab: "files" | "changes" | "agents"; n: number } | undefined>();
+  const [tabRequest, setTabRequest] = useState<{ tab: "files" | "changes" | "agents" | "sources"; n: number } | undefined>();
   const [loginAgent, setLoginAgent] = useState<string | undefined>();
   const [lastCreated, setLastCreated] = useState<SessionInfo | null>(null);
   const navigation = useRef(0);
@@ -116,7 +136,9 @@ export function Client({
   const sidebarVisible = sidebarOpen && !settingsOpen && !pluginsOpen;
   const sidebarMounted = usePresence(sidebarVisible, settingsOpen ? 0 : 420);
 
-  const openSettings = useCallback(() => {
+  const [settingsStart, setSettingsStart] = useState<"general" | "automation" | "usage">("general");
+  const openSettings = useCallback((start: "general" | "automation" | "usage" = "general") => {
+    setSettingsStart(start);
     setSettingsOpen(true);
   }, []);
 
@@ -210,19 +232,18 @@ export function Client({
     if (!alreadyAccepted && wanted.length > 0) {
       activate(destination.id);
       await new Promise<void>((resolve) => {
-        let confirmations = 0;
+        // Each wanted value is confirmed by a config_options event that shows it as the current one (an unrelated
+        // announcement does not count), so the first prompt never races ahead of a model change.
+        const waiting = new Map(wanted);
         let off = () => {};
         const timer = setTimeout(() => {
           off();
           resolve();
-        }, 4_000);
+        }, 6_000);
         off = conn.onMessage((message) => {
-          if (
-            message.type === "event" &&
-            message.stored.sessionId === destination.id &&
-            message.stored.event.type === "config_options" &&
-            ++confirmations >= wanted.length
-          ) {
+          if (message.type !== "event" || message.stored.sessionId !== destination.id || message.stored.event.type !== "config_options") return;
+          for (const option of message.stored.event.options) if (waiting.get(option.id) === option.currentValue) waiting.delete(option.id);
+          if (waiting.size === 0) {
             clearTimeout(timer);
             off();
             resolve();
@@ -299,6 +320,7 @@ export function Client({
   const agentLabel = row ? (sessionAgent?.label ?? row.agentId) : "";
   const signInHint = sessionAgent?.signInHint;
   const activeState = useSession(store, activeId);
+  const activeView = useTranscriptView(activeId);
   const working = activeState.status === "running";
 
   // Settings: Ctrl+, opens them; the server's own preferences are fetched when the page first opens.
@@ -313,9 +335,9 @@ export function Client({
     return () => document.removeEventListener("keydown", onKey);
   }, []);
   useEffect(() => {
-    if (!settingsOpen || serverSettings) return;
+    if (serverSettings) return;
     void api.settings().then(setServerSettings).catch(() => {});
-  }, [settingsOpen, serverSettings, api]);
+  }, [serverSettings, api]);
   const changeServerSetting = useCallback(
     async (patch: Partial<ServerSettings>) => {
       try {
@@ -352,11 +374,20 @@ export function Client({
   }, [clientSettings.preventSleep, working]);
   const sessionEdits = useMemo(() => editsOfSession(activeState.items), [activeState.items]);
   const sessionSubagents = useMemo(() => subagentsOf(activeState.items), [activeState.items]);
-  const openPanelTab = (tab: "files" | "changes" | "agents") => {
+  const sessionResearch = useMemo(() => collectResearch(activeState.items), [activeState.items]);
+  const openPanelTab = (tab: "files" | "changes" | "agents" | "sources") => {
     setLoginAgent(undefined);
     setTabRequest((r) => ({ tab, n: (r?.n ?? 0) + 1 }));
     setPanelOpen(true);
   };
+  // The first source a research notes down opens the Sources tab (once per chat), so it can be followed live.
+  const sourcesShown = useRef(new Set<string>());
+  useEffect(() => {
+    if (!activeId || sessionResearch.sources.length === 0 || sourcesShown.current.has(activeId)) return;
+    sourcesShown.current.add(activeId);
+    if (!panelOpen) openPanelTab("sources");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeId, sessionResearch.sources.length]);
   const dismiss = () => setBanner(null);
   // Context figures mean nothing before the first message: the session shows them once it has started.
   const sessionStarted = activeState.items.some((i) => i.kind === "user");
@@ -389,6 +420,7 @@ export function Client({
       }),
     [api, checkLimits],
   );
+  const usagePage = useMemo(() => ({ loadUsage, loadHistory: (refresh?: boolean) => api.usageHistory(refresh) }), [loadUsage, api]);
   // Sidebar edits: the server changes first, then the list is read again (a deleted open chat leaves the screen).
   const renameSession = (id: string, title: string) => void api.renameSession(id, title).then(reload, () => showError("network"));
   const renameProject = (id: string, name: string) => void api.renameProject(id, name).then(reload, () => showError("network"));
@@ -433,6 +465,14 @@ export function Client({
         { label: t("menu.togglePanel"), disabled: !project, onSelect: () => setPanelOpen((v) => !v) },
         { separator: true },
         { label: t("account.theme"), onSelect: () => setLight((v) => !v) },
+        { separator: true },
+        { heading: t("menu.transcriptView") },
+        ...TRANSCRIPT_VIEWS.map((v) => ({
+          label: t(`settings.transcriptView.${v}`),
+          checked: activeView === v,
+          disabled: !activeId,
+          onSelect: () => activeId && setSessionView(activeId, v),
+        })),
       ],
     },
     {
@@ -450,6 +490,7 @@ export function Client({
   ];
 
   return (
+    <LocalImageProvider value={api.localImage}>
     <div className="app-shell flex h-dvh flex-col overflow-hidden bg-bg text-text">
       <TitleBar
         canBack={nav.canBack}
@@ -465,6 +506,7 @@ export function Client({
         <button
           type="button"
           className="rail-button"
+          data-anim="home"
           aria-label={t("rail.home")}
           title={t("rail.home")}
           onClick={() => newChat()}
@@ -474,6 +516,7 @@ export function Client({
         <button
           type="button"
           className="rail-button"
+          data-anim="plugins"
           aria-label={t("rail.plugins")}
           title={t("rail.plugins")}
           aria-pressed={pluginsOpen}
@@ -484,13 +527,23 @@ export function Client({
         >
           <SymbolIcon name="puzzle" className="size-[18px]" />
         </button>
-        <UsageMenu load={loadUsage} />
-        <ProfileMenu
-          connection={state}
-          light={light}
-          onOpenSettings={openSettings}
-          onTheme={() => setLight((v) => !v)}
-        />
+        <div className="rail-spacer" aria-hidden="true" />
+        <UsageMenu load={loadUsage} onOpenDetails={() => openSettings("usage")} />
+        <button
+          type="button"
+          className="rail-button"
+          data-anim="gear"
+          aria-label={t("account.settings")}
+          title={t("account.settings")}
+          aria-pressed={settingsOpen}
+          onClick={() => openSettings()}
+        >
+          <SymbolIcon name="gear" className="size-[18px]" />
+          <span className={`rail-dot ${CONNECTION_DOT[state]}`} aria-hidden="true" />
+          <span className="sr-only">
+            {t("connection.label")}: {t(`connection.${state}`)}
+          </span>
+        </button>
       </div>
       {sidebarMounted && !settingsOpen && (
         <div className="sidebar-shell" data-open={sidebarVisible} aria-hidden={!sidebarVisible || undefined}>
@@ -529,6 +582,10 @@ export function Client({
             }}
             serverSettings={serverSettings}
             onServerSetting={changeServerSetting}
+            loadOptions={warmPath ? (agentId) => api.agentOptions(agentId, warmPath) : undefined}
+            usage={usagePage}
+            startCategory={settingsStart}
+            automation={{ api, projects: groups.map((g) => g.project), onOpenSession: (id) => select(id) }}
             onClose={() => setSettingsOpen(false)}
           />
           </Suspense>
@@ -543,6 +600,7 @@ export function Client({
             onDismissBanner={dismiss}
             onError={showError}
             leading={null}
+            onRunChecks={() => void api.runChecks(activeId).catch(() => showError("network"))}
             trailing={
               <div className="flex items-center gap-2">
                 {sessionStarted && (
@@ -594,6 +652,8 @@ export function Client({
               onStart={start}
               loadOptions={(agentId, path) => api.agentOptions(agentId, path)}
               workspaceApi={workspaceApi}
+              serverSettings={serverSettings}
+              onServerSetting={(patch) => void changeServerSetting(patch)}
             />
           </>
         )}
@@ -606,6 +666,8 @@ export function Client({
             onOpenFiles={() => openPanelTab("files")}
             onOpenChanges={() => openPanelTab("changes")}
             onOpenAgents={() => openPanelTab("agents")}
+            research={sessionResearch}
+            onOpenSources={() => openPanelTab("sources")}
           />
         )}
       </main>
@@ -618,6 +680,7 @@ export function Client({
           loginAgent={loginAgent}
           edits={sessionEdits}
           subagents={sessionSubagents}
+          research={sessionResearch}
           {...(tabRequest ? { tabRequest } : {})}
           onClose={() => setPanelOpen(false)}
           onInsert={(path) =>
@@ -670,5 +733,6 @@ export function Client({
       )}
       </div>
     </div>
+    </LocalImageProvider>
   );
 }

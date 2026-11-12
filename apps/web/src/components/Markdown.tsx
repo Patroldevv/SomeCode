@@ -9,7 +9,9 @@ import ReactMarkdown, {
 import remarkGfm from 'remark-gfm';
 import { t } from '../i18n/index.ts';
 import { splitMarkdownBlocks } from '../lib/markdownBlocks.ts';
+import { localImagePath } from '../lib/localImage.ts';
 import { safeHref } from '../lib/safeUrl.ts';
+import { LocalImage } from './LocalImage.tsx';
 import { CodeBlock } from './CodeBlock.tsx';
 
 // Renders UNTRUSTED agent markdown. Safety rests on:
@@ -17,7 +19,9 @@ import { CodeBlock } from './CodeBlock.tsx';
 //    user still sees what the agent wrote);
 //  - URLs pass react-markdown's own `defaultUrlTransform` AND the stricter `safeHref`; the `a` component checks
 //    `safeHref` again and renders a plain <span> when it refuses;
-//  - images never become <img> (no request leaves the page), only their alt text is shown;
+//  - images never become <img> straight from the markdown (no request leaves the page), only their alt text is shown;
+//    the one exception is a picture given as a file path on this computer: SomeCode's own server is asked for it
+//    (and decides whether that place may be read), and it is shown as a screenshot;
 //  - code is highlighted into React elements, never injected as HTML.
 
 type HastNode = NonNullable<ExtraProps['node']>['children'][number];
@@ -28,7 +32,10 @@ function textOf(node: HastNode): string {
   return '';
 }
 
-const urlTransform: UrlTransform = (url) => (defaultUrlTransform(url) ? (safeHref(url) ?? '') : '');
+const urlTransform: UrlTransform = (url, key, node) => {
+  if (key === 'src' && node.tagName === 'img' && localImagePath(url)) return url;
+  return defaultUrlTransform(url) ? (safeHref(url) ?? '') : '';
+};
 
 const remarkPlugins = [remarkGfm];
 
@@ -62,7 +69,11 @@ const components: Components = {
       </a>
     );
   },
-  img: ({ alt }) => (alt ? <span className="text-text-muted">{alt}</span> : null),
+  img: ({ alt, src }) => {
+    const path = typeof src === 'string' ? localImagePath(src) : null;
+    if (path) return <LocalImage path={path} alt={alt ?? ''} />;
+    return alt ? <span className="text-text-muted">{alt}</span> : null;
+  },
   pre: ({ node }) => {
     const code = node?.children.find((child) => child.type === 'element' && child.tagName === 'code');
     const classes = code?.type === 'element' ? code.properties['className'] : undefined;
@@ -106,16 +117,16 @@ const components: Components = {
   hr: () => <hr className="my-4 border-border" />,
   table: ({ children }) => (
     <div className="my-3 max-w-full overflow-x-auto">
-      <table className="border-collapse text-[0.95em]">{children}</table>
+      <table className="min-w-full border-collapse text-[0.95em]">{children}</table>
     </div>
   ),
   th: ({ children, style }) => (
-    <th style={style} className="border border-border bg-bg-subtle px-2 py-1 text-left font-semibold">
+    <th style={style} className="min-w-[4.5rem] border border-border bg-bg-subtle px-2.5 py-1.5 text-left align-top font-semibold [overflow-wrap:break-word] [word-break:normal]">
       {children}
     </th>
   ),
   td: ({ children, style }) => (
-    <td style={style} className="border border-border px-2 py-1">
+    <td style={style} className="min-w-[4.5rem] border border-border px-2.5 py-1.5 align-top [overflow-wrap:break-word] [word-break:normal]">
       {children}
     </td>
   ),

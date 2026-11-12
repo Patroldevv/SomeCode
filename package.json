@@ -4,7 +4,9 @@
   "private": true,
   "type": "module",
   "bin": {
-    "somecode": "bin/somecode.ts"
+    "somecode": "bin/somecode.ts",
+    "somecode-scout": "bin/somecode-scout.ts",
+    "somecode-claude": "bin/somecode-claude.ts"
   },
   "workspaces": [
     "packages/*",

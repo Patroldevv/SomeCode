@@ -75,7 +75,7 @@ describe('normalizeUpdate', () => {
     expect(normalizeUpdate(update)).toMatchObject({ kind: 'other', status: 'pending' });
   });
 
-  it('maps tool_call terminal and non-text content', () => {
+  it('maps tool_call terminal, text and image content (a picture a tool returned stays a picture)', () => {
     const update: SessionUpdate = {
       sessionUpdate: 'tool_call',
       toolCallId: 't4',
@@ -90,7 +90,7 @@ describe('normalizeUpdate', () => {
       content: [
         { type: 'terminal', terminalId: 'term1' },
         { type: 'text', text: 'out' },
-        { type: 'text', text: '[image]' },
+        { type: 'image', data: 'AA==', mimeType: 'image/png' },
       ],
     });
   });

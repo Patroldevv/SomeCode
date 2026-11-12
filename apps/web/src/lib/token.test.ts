@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { loadToken } from './token.ts';
+import { exchangeLaunchCode, loadToken, takeLaunchCode } from './token.ts';
 
 /** A minimal browser for node: location (hash/path/search), history.replaceState and sessionStorage. */
 function browser(url: string, stored: Record<string, string> = {}) {
@@ -39,5 +39,26 @@ describe('loadToken', () => {
   it('without either it returns null', () => {
     browser('http://127.0.0.1:5174/#other=1');
     expect(loadToken()).toBeNull();
+  });
+});
+
+describe('launch codes', () => {
+  it('strips #code= from the address, hands it out once and stores the token it is traded for', async () => {
+    const b = browser('http://127.0.0.1:5174/#code=ONE-TIME-CODE');
+    expect(loadToken()).toBeNull();
+    expect(b.replaceState).toHaveBeenCalledExactlyOnceWith(null, '', '/');
+    expect(takeLaunchCode()).toBe('ONE-TIME-CODE');
+    expect(takeLaunchCode()).toBeNull();
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ token: 'real-token' }), { status: 200 })));
+    expect(await exchangeLaunchCode('ONE-TIME-CODE')).toBe('real-token');
+    expect(b.storage.get('somecode.token')).toBe('real-token');
+  });
+
+  it('gets null for a code the server refuses or when the server cannot be reached', async () => {
+    browser('http://127.0.0.1:5174/');
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 401 })));
+    expect(await exchangeLaunchCode('x')).toBeNull();
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('down'); }));
+    expect(await exchangeLaunchCode('x')).toBeNull();
   });
 });

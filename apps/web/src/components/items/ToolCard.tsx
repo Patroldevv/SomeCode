@@ -1,14 +1,34 @@
 import { useId, useMemo, useState } from 'react';
 import { plural, t } from '../../i18n/index.ts';
 import type { ToolItem } from '../../lib/sessionState.ts';
+import { browserLabel, screenshotCaption } from '../../lib/browserTools.ts';
+import { researchLabel, researchTool } from '../../lib/researchTools.ts';
+import { isClaudeCall, isScoutCall } from '../../lib/subagents.ts';
 import { sumStats, toolFiles, type ToolFile } from '../../lib/toolFiles.ts';
 import { Collapse } from '../Collapse.tsx';
 import { ChevronIcon } from '../icons.tsx';
+import { ScreenshotThumb } from './ScreenshotThumb.tsx';
 import { ToolDetails } from './ToolDetails.tsx';
 import { ToolKindIcon, ToolStatus, toolKindLabel } from './ToolGlyphs.tsx';
 import { FileIcon } from '../FileIcon.tsx';
+import { SymbolIcon, type SymbolName } from '../SymbolIcon.tsx';
 
 const GENERIC_TITLE = /^(file\s+.+|(run\s+)?(read|read_file|readfile|view_file|view|cat|file|write|edit|multiedit|multi_edit|patch|apply_patch|create|update|str_replace\w*|run_command|command|bash|exec|terminal|sh|search|search_web|find|grep|fetch)(\.ts|\.js)?)$/i;
+
+const RESEARCH_ICON: Partial<Record<string, SymbolName>> = {
+  web_search: 'search',
+  web_read: 'globe',
+  research_note: 'edit',
+  research_status: 'steps',
+  history_search: 'history',
+  history_read: 'history',
+  memory_add: 'brain',
+  memory_list: 'brain',
+  memory_forget: 'brain',
+  schedule_create: 'schedule',
+  schedule_list: 'schedule',
+  schedule_cancel: 'schedule',
+};
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
@@ -55,6 +75,25 @@ function extractQuery(item: ToolItem): string | null {
 /** Natural, action-oriented titles like "Reading app.ts", "Ran npm test", or "Wrote README.md". */
 export function describeToolAction(item: ToolItem, files: ToolFile[] = []): string | null {
   const running = item.status === 'in_progress' || item.status === 'pending';
+
+  const research = researchLabel(item);
+  if (research) return research;
+
+  if (isScoutCall(item)) {
+    const cmd = extractCommand(item) || item.title;
+    const taskMatch = cmd.match(/somecode-scout(?:\s+--[\w-]+(?:\s+\S+)?)*\s+["']?([^"';\n]+)/i);
+    const task = taskMatch?.[1]?.trim() || 'Workspace inspection';
+    const shortTask = task.length > 60 ? task.slice(0, 57) + '…' : task;
+    return running ? `Scouting: ${shortTask}…` : `Scout: ${shortTask}`;
+  }
+
+  if (isClaudeCall(item)) {
+    const cmd = extractCommand(item) || item.title;
+    const taskMatch = cmd.match(/somecode-claude(?:\s+--[\w-]+(?:\s+\S+)?)*\s+["']?([^"';\n]+)/i);
+    const task = taskMatch?.[1]?.trim() || 'Code reasoning';
+    const shortTask = task.length > 60 ? task.slice(0, 57) + '…' : task;
+    return running ? `Claude: ${shortTask}…` : `Claude: ${shortTask}`;
+  }
 
   if (item.toolKind === 'edit' || /^(write|edit|multiedit|multi_edit|patch|apply_patch|create|update|str_replace\w*)$/i.test(item.title.trim())) {
     if (files.length > 0) {
@@ -115,8 +154,17 @@ export function ToolCard({ item, expanded, onToggle }: { item: ToolItem; expande
   const files = useMemo(() => toolFiles(item), [item]);
   const stats = files.length > 0 ? sumStats(files) : null;
   const targetPath = files[0]?.path ?? extractPath(item);
+  const isScout = isScoutCall(item);
+  const isClaude = isClaudeCall(item);
+  const running = item.status === 'in_progress' || item.status === 'pending';
   const base = item.title.trim() || toolKindLabel(item.toolKind);
-  const title = (item.title.trim() === '' || GENERIC_TITLE.test(base) ? describeToolAction(item, files) : null) ?? base;
+  const browser = browserLabel(item);
+  const research = researchLabel(item);
+  const title = browser ?? research ?? (item.title.trim() === '' || isScout || isClaude || GENERIC_TITLE.test(base) ? describeToolAction(item, files) : null) ?? base;
+  // A picture the tool returned (a browser screenshot) sits in the conversation under the line, not behind the fold.
+  const shot = item.content.find((c): c is Extract<typeof c, { type: 'image' }> => c.type === 'image');
+  const caption = screenshotCaption(item);
+  const details = shot ? { ...item, content: item.content.filter((c) => c.type !== 'image') } : item;
 
   return (
     <div className="min-w-0 font-ui text-[13.5px] text-text-muted">
@@ -128,7 +176,27 @@ export function ToolCard({ item, expanded, onToggle }: { item: ToolItem; expande
           onClick={toggle}
           className="tool-row group -ml-1.5 flex min-w-0 flex-1 items-center gap-2 rounded px-1.5 py-0.5 text-left hover:bg-bg-subtle hover:text-text focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
         >
-          {targetPath ? <FileIcon path={targetPath} className="size-3.5 shrink-0" /> : <ToolKindIcon kind={item.toolKind} />}
+          {isScout ? (
+            <span className="shrink-0 inline-flex items-center gap-1.5 rounded-md px-1.5 py-0.5 text-[11px] font-medium bg-bg-elevated text-text-secondary border border-border">
+              <SymbolIcon name="spark" className="size-3 text-accent" />
+              <span>Gemini Scout</span>
+            </span>
+          ) : isClaude ? (
+            <span className="shrink-0 inline-flex items-center gap-1.5 rounded-md px-1.5 py-0.5 text-[11px] font-medium bg-bg-elevated text-text-secondary border border-border">
+              <SymbolIcon name="spark" className="size-3 text-accent" />
+              <span>Claude Subagent</span>
+            </span>
+          ) : running ? (
+            <ToolStatus status={item.status} />
+          ) : research ? (
+            <SymbolIcon name={RESEARCH_ICON[researchTool(item) ?? 'web_search'] ?? 'globe'} className="size-3.5 shrink-0" />
+          ) : browser ? (
+            <SymbolIcon name="image" className="size-3.5 shrink-0" />
+          ) : targetPath ? (
+            <FileIcon path={targetPath} className="size-3.5 shrink-0" />
+          ) : (
+            <ToolKindIcon kind={item.toolKind} />
+          )}
           <span className={`min-w-0 truncate ${item.status === 'in_progress' ? 'status-fade text-text font-medium' : ''}`} title={title}>
             {title}
           </span>
@@ -144,10 +212,16 @@ export function ToolCard({ item, expanded, onToggle }: { item: ToolItem; expande
             className={`ml-auto size-3 shrink-0 text-text-muted motion-safe:transition-transform ${open ? 'rotate-90 text-text' : ''}`}
           />
         </button>
-        <ToolStatus status={item.status} />
+        {!running && <ToolStatus status={item.status} />}
       </div>
+      {shot && (
+        <div className="mt-1.5 mb-1 ml-1 min-w-0">
+          <ScreenshotThumb data={shot.data} mimeType={shot.mimeType} {...(caption ? { caption: caption.name || caption.url || '' } : {})} />
+          {caption?.url && <p className="mt-1 truncate text-xs text-text-muted" title={caption.url}>{caption.url}</p>}
+        </div>
+      )}
       <Collapse id={id} open={open} className="mt-1 mb-2 ml-1 border-l border-border pl-4">
-        <ToolDetails item={item} />
+        <ToolDetails item={details} />
       </Collapse>
     </div>
   );
